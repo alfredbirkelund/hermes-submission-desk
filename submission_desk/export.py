@@ -30,7 +30,8 @@ def md(text) -> str:
 
 
 def code(text) -> str:
-    value = " ".join(str(text if text is not None else "").split())
+    """Inline code span. Pipes are escaped because GFM splits table cells on them even inside code."""
+    value = " ".join(str(text if text is not None else "").split()).replace("|", "\\|")
     run = max((len(m) for m in re.findall(r"`+", value)), default=0)
     fence = "`" * (run + 1)
     pad = " " if value.startswith("`") or value.endswith("`") else ""

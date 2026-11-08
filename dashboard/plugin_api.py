@@ -50,7 +50,9 @@ def _call(fn: Callable[..., Any]):
         human = actors.human("desktop", platform="desktop")
         return fn(desk, human, export)
     except errors.DeskError as exc:
-        return JSONResponse(status_code=exc.http_status, content=exc.to_dict())
+        # 401/403 make Desktop's transport start a sign-in flow; a refusal here is never an auth failure.
+        status = 422 if exc.http_status in (401, 403) else exc.http_status
+        return JSONResponse(status_code=status, content=exc.to_dict())
     except Exception as exc:  # keep the page alive and the error visible
         return JSONResponse(status_code=500, content={"error": "internal", "message": f"{type(exc).__name__}: {exc}",
                                                       "hint": "Nothing was changed by this failed request."})
