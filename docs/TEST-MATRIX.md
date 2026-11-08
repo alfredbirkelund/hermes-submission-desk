@@ -39,6 +39,7 @@ and a second job runs the catalog's own admission command, `hermes plugins valid
 | Manual entry works without any model and is marked unsourced | `test_requirements_sources.py` | pass |
 | Signatures and eligibility statements are the applicant's attestations, bound to file bytes where relevant; hand-verified checks are labelled and bound | `test_actions.py` (3) | pass |
 | Export names the checked revisions, renders hostile text inertly, says SNAPSHOT ONLY when a file changes during export, and leaves no partial output when interrupted | `test_export.py` (3) | pass |
+| `hermes submission-desk` says so when there is no application yet, instead of printing nothing | `test_export.py` | pass |
 | Retried requests apply once; a stale window cannot overwrite a newer decision; mapping to a new portal field is one atomic request | `test_concurrency.py` | pass |
 | Profiles keep separate ledgers; a failed save leaves no partial state; a killed recheck leaves a consistent ledger; deletion needs confirmation and touches only that application | `test_concurrency.py` | pass |
 | Desktop REST errors are parsed through Electron's IPC wrapper (stale-revision and delete-confirmation flows depend on it) | `test_desktop_js.py` (Node) | pass |
