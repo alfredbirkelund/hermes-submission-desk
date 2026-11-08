@@ -44,6 +44,29 @@ def test_a_stale_window_cannot_overwrite_a_newer_decision(host, material, tmp_pa
     assert item(state, "R1")["requirement"]["statement"] == "CV"
 
 
+def test_mapping_to_a_new_portal_field_is_one_atomic_request(host, material):
+    """Desktop sends one request with the revision it loaded; creating the field must not make it stale."""
+    ws = _ws(host, material)
+    host.api("POST", f"/workspaces/{ws}/requirements", {"statement": "CV as PDF", "kind": "document", "rules": {"formats": ["pdf"]}})
+    loaded = host.api("GET", f"/workspaces/{ws}")["body"]["workspace"]["revision"]
+    out = host.api("POST", f"/workspaces/{ws}/mappings", {
+        "requirement": "R1", "new_field": {"label": "Curriculum vitae (PDF)", "kind": "upload"},
+        "document": "cv.pdf", "expected_revision": loaded})
+    assert out["status"] == 200, out
+    assert out["body"]["mapping"]["field"] == "F1" and out["body"]["mapping"]["document"] == "D1"
+    state = host.api("GET", f"/workspaces/{ws}")["body"]
+    assert state["workspace"]["revision"] == loaded + 1  # one change, one revision
+    mapping = item(state, "R1")["mappings"][0]
+    assert mapping["field"]["label"] == "Curriculum vitae (PDF)" and mapping["document"]["rel_path"] == "cv.pdf"
+
+    # A refused mapping leaves no orphan field behind.
+    bad = host.api("POST", f"/workspaces/{ws}/mappings", {
+        "requirement": "R404", "new_field": {"label": "Budget (PDF)"}, "expected_revision": loaded + 1})
+    assert bad["status"] == 404, bad
+    labels = [f["label"] for f in host.api("GET", f"/workspaces/{ws}")["body"]["fields"]]
+    assert labels == ["Curriculum vitae (PDF)"]
+
+
 def test_profiles_keep_separate_ledgers(host, material, tmp_path):
     ws = _ws(host, material)
     other_home = tmp_path / "other-profile"

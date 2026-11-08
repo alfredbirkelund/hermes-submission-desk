@@ -152,9 +152,11 @@ def revise_field(ws: str, code: str, payload: dict = Body(default={})):
 
 @router.post("/workspaces/{ws}/mappings")
 def set_mapping(ws: str, payload: dict = Body(default={})):
+    new_field = payload.get("new_field") or None
     return _call(lambda d, h, e: d.set_mapping(h, ws, requirement=payload.get("requirement"), field=payload.get("field") or None,
                                                document=payload.get("document") or None, mapping=payload.get("mapping") or None,
-                                               note=payload.get("note"), expected_revision=_rev(payload), idem=_idem(payload)))
+                                               note=payload.get("note"), expected_revision=_rev(payload), idem=_idem(payload),
+                                               new_field=new_field))
 
 
 @router.post("/workspaces/{ws}/mappings/{code}/remove")

@@ -43,7 +43,10 @@ let storage = null
 // ───────────────────────────────────────────── backend calls
 
 function parseError(err) {
-  const text = String((err && err.message) || err || 'Request failed')
+  // Desktop's REST bridge rejects with "<status>: <body>". When the rejection crosses Electron IPC
+  // the message arrives wrapped: "Error invoking remote method 'hermes:api': Error: 409: {...}".
+  const raw = String((err && err.message) || err || 'Request failed')
+  const text = raw.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^Error:\s*/, '')
   const match = /^(\d{3}):\s*([\s\S]*)$/.exec(text)
   const status = match ? Number(match[1]) : Number(err && err.statusCode) || 0
   let body = null
@@ -52,6 +55,7 @@ function parseError(err) {
   } catch {
     body = null
   }
+  if (body && typeof body.detail === 'object' && body.detail && !body.error) body = body.detail // FastAPI HTTPException shape
   return {
     status,
     code: (body && body.error) || (status ? 'http_' + status : 'network'),
@@ -420,12 +424,9 @@ function MapDialog({ wsId, data, item, mapping, onClose }) {
   const list = ((files.data && files.data.files) || []).filter(f => !filter || f.rel_path.toLowerCase().includes(filter.toLowerCase()))
   const submit = async () => {
     try {
-      let field = fieldCode
-      if (!field && newLabel.trim()) {
-        const created = await api('/workspaces/' + encodeURIComponent(wsId) + '/fields', { method: 'POST', body: { label: newLabel.trim(), kind: item.requirement.kind === 'text' ? 'text' : 'upload', idempotency_key: newKey() } })
-        field = created.field.code
-      }
-      await run('/mappings', { requirement: item.code, field: field || null, document: docPath || null, mapping: mapping ? mapping.code : null, expected_revision: data.workspace.revision })
+      // One request: a new field is created in the same transaction as the mapping.
+      const newField = !fieldCode && newLabel.trim() ? { label: newLabel.trim(), kind: item.requirement.kind === 'text' ? 'text' : 'upload' } : null
+      await run('/mappings', { requirement: item.code, field: fieldCode || null, new_field: newField, document: docPath || null, mapping: mapping ? mapping.code : null, expected_revision: data.workspace.revision })
       onClose()
     } catch { /* shown inline */ }
   }
@@ -774,7 +775,7 @@ function WorkspaceView({ wsId, workspaces, onSwitch, onNew }) {
           h(Button, { size: 'sm', variant: 'secondary', onClick: recheck, disabled: checking, title: 'Re-read and hash every mapped file and source now' }, h(Codicon, { name: checking ? 'loading' : 'refresh', size: 12, spinning: checking }), checking ? 'Checking…' : 'Recheck'),
           h(Button, { size: 'sm', variant: 'secondary', onClick: () => setDialog({ type: 'export' }) }, h(Codicon, { name: 'checklist', size: 12 }), 'Export checklist'))),
       h('div', { role: 'status', style: { ...S.tiny, color: data.fresh ? 'var(--ui-text-tertiary)' : 'var(--ui-yellow)' } },
-        data.fresh ? `Current: files re-read and hashed at ${when(data.checked_at)}. Not monitored continuously; recheck after you change files.` : data.freshness),
+        data.fresh ? `Current: files re-read and hashed at ${when(data.checked_at)}. Not monitored continuously; recheck after you change files.` : `Snapshot from ${when(data.checked_at)}: files have not been re-read since. Recheck to update.`),
       h(ErrorLine, { error: checkError })),
 
     // Headline: blockers first, never a bare green summary.

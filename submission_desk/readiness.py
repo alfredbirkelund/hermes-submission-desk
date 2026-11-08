@@ -98,7 +98,7 @@ def derive(state: dict, *, now: datetime, fresh: bool, checked_at: str | None) -
                  if s not in (READY, EXCLUDED)]
         if open_actions:
             parts.append(f"{len(open_actions)} open action{'s' if len(open_actions) != 1 else ''}")
-        verdict, headline = "blocked", f"{blockers} item{'s' if blockers != 1 else ''} need attention: " + ", ".join(parts) + "."
+        verdict, headline = "blocked", (f"{blockers} items need attention: " if blockers != 1 else "1 item needs attention: ") + ", ".join(parts) + "."
     else:
         verdict = "no_local_blockers"
         headline = "No blockers found by the checks that ran. Unchecked parts are listed; signing and submitting stay with you."

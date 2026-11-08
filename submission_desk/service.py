@@ -576,16 +576,36 @@ class Desk:
 
     def set_mapping(self, actor: Actor, ws_ref: str | None, *, requirement: str, field: str | None, document: str | None,
                     mapping: str | None = None, note: str | None = None, expected_revision: int | None = None,
-                    idem: str | None = None) -> dict:
+                    idem: str | None = None, new_field: dict | None = None) -> dict:
+        """Map a requirement to a portal field and a file.
+
+        ``new_field`` ({"label", "kind"}) creates the field in the same transaction, so a window that
+        maps to a field it is creating needs one request and one revision, and a refused mapping
+        leaves no orphan field behind.
+        """
+        if new_field is not None and not isinstance(new_field, dict):
+            raise Invalid("new_field must be an object with the exact portal label.")
+        if new_field and field:
+            raise Invalid("Give either an existing field or a new field label, not both.")
         with self.store.tx(write=True) as conn:
             prior = idempotent_result(conn, idem)
             if prior is not None:
                 return prior
             ws = self._ws_row(conn, ws_ref)
             self._check_revision(ws, expected_revision)
-            out = self._set_mapping(conn, ws, actor, requirement=requirement, field=field, document=document, mapping=mapping, note=note)
+            refs = {}
+            if new_field:
+                # Resolve the requirement first so an unknown requirement creates nothing.
+                req = self._resolve(conn, "requirements", ws["id"], requirement, "requirement")
+                refs[requirement] = req
+                created = self._create_field(conn, ws, actor, new_field)
+                field = created["code"]
+                refs[field] = {"id": created["id"], "code": created["code"]}
+            out = self._set_mapping(conn, ws, actor, requirement=requirement, field=field, document=document, mapping=mapping,
+                                    note=note, refs=refs)
             return self._finish(conn, ws, actor, "mapping_set", out["code"],
-                                {"requirement": requirement, "field": field, "document": document}, {"ok": True, "mapping": out}, idem)
+                                {"requirement": requirement, "field": field, "document": document, "new_field": bool(new_field)},
+                                {"ok": True, "mapping": out}, idem)
 
     def _set_mapping(self, conn, ws: dict, actor: Actor, *, requirement: str, field: str | None, document: str | None,
                      mapping: str | None, note: str | None, refs: dict | None = None) -> dict:
