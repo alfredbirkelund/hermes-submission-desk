@@ -38,6 +38,15 @@ def encrypted_pdf(path: Path, source: Path, *, user_password: str = "secret", ow
     return path
 
 
+def empty_tree_pdf(path: Path) -> Path:
+    """A structurally valid PDF with an empty page tree (/Count 0)."""
+    from pypdf import PdfWriter
+
+    with open(path, "wb") as handle:
+        PdfWriter().write(handle)
+    return path
+
+
 def image_only_pdf(path: Path, text: str = "Scanned page") -> Path:
     """A 'scanned' PDF: the page is a raster image of text, with no text layer."""
     from PIL import Image, ImageDraw

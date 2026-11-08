@@ -14,6 +14,7 @@ Rules:
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import stat
@@ -61,15 +62,19 @@ def resolve_root(material_root: str) -> Path:
         raise ValueError(f"Material folder does not exist or is not a directory: {real}")
     if real == Path(real.anchor):
         raise ValueError("Refusing to use a filesystem root as the material folder.")
-    hermes_home = os.environ.get("HERMES_HOME")
-    for protected in filter(None, [hermes_home, os.path.expanduser("~/.hermes"), os.path.expanduser("~/.ssh")]):
-        protected_real = Path(os.path.realpath(protected))
-        if _is_within(real, protected_real) or _is_within(protected_real, real):
-            raise ValueError(
-                f"Refusing a material folder that contains or sits inside Hermes or key data ({protected_real})."
-            )
-    if real == Path(os.path.realpath(os.path.expanduser("~"))):
+    home = Path(os.path.realpath(Path.home()))
+    if real == home:
         raise ValueError("Pick the folder that holds this application's files, not your whole home directory.")
+    if _is_within(real, home) and real.relative_to(home).parts[0].startswith("."):
+        raise ValueError(
+            "Refusing a folder inside a hidden directory of your home: settings, keys and Hermes data live there. "
+            "Keep the application files in an ordinary folder."
+        )
+    hermes_home = os.environ.get("HERMES_HOME")
+    if hermes_home:
+        protected = Path(os.path.realpath(hermes_home))
+        if _is_within(real, protected) or _is_within(protected, real):
+            raise ValueError(f"Refusing a material folder that contains or sits inside the Hermes home ({protected}).")
     return real
 
 
@@ -78,6 +83,34 @@ def _is_within(path: Path, root: Path) -> bool:
         return os.path.commonpath([str(path), str(root)]) == str(root)
     except ValueError:
         return False
+
+
+_FILE_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+_DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+_DIR_FD_SUPPORTED = os.open in os.supports_dir_fd
+
+
+def _open_beneath(root: Path, parts: tuple[str, ...]) -> int:
+    """Open ``root/<parts>`` one component at a time, refusing a symlink at every step.
+
+    Each directory is opened relative to the previous one with O_NOFOLLOW, so a directory that is
+    swapped for a symlink after the realpath check cannot redirect the open outside the folder.
+    Where ``dir_fd`` is unsupported (Windows) it falls back to one O_NOFOLLOW open plus the inode
+    comparison the caller performs.
+    """
+    if not parts or any(part in ("", ".", "..") for part in parts):
+        raise FileNotFoundError(errno.ENOENT, "invalid path")
+    if not _DIR_FD_SUPPORTED:
+        return os.open(os.path.join(str(root), *parts), _FILE_FLAGS)
+    current = os.open(str(root), _DIR_FLAGS)
+    try:
+        for part in parts[:-1]:
+            nxt = os.open(part, _DIR_FLAGS, dir_fd=current)
+            os.close(current)
+            current = nxt
+        return os.open(parts[-1], _FILE_FLAGS, dir_fd=current)
+    finally:
+        os.close(current)
 
 
 def normalize_rel_path(root: Path, path: str) -> str:
@@ -125,28 +158,22 @@ def read_snapshot(root: Path, rel_path: str, *, max_content: int = MAX_CONTENT_B
         return Problem(rel, "unreadable", f"{type(exc).__name__}: {exc.strerror or exc}")
     if not stat.S_ISREG(before.st_mode):
         return Problem(rel, "not_regular", "Not a regular file (directory, device, pipe or socket).")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
     try:
-        fd = os.open(real, flags)
+        fd = _open_beneath(root, Path(os.path.relpath(real, root)).parts)
     except FileNotFoundError:
         return Problem(rel, "missing", "The file disappeared while it was being opened.")
     except PermissionError as exc:
         return Problem(rel, "unreadable", f"Permission denied: {exc.strerror or exc}")
     except OSError as exc:
-        return Problem(rel, "changed_during_read" if exc.errno in (40,) else "unreadable",
-                       f"{type(exc).__name__}: {exc.strerror or exc}")
+        # ELOOP/ENOTDIR: a component became a symlink (or stopped being a directory) after the check.
+        changed = exc.errno in (errno.ELOOP, errno.ENOTDIR)
+        return Problem(rel, "changed_during_read" if changed else "unreadable", f"{type(exc).__name__}: {exc.strerror or exc}")
     try:
         opened = os.fstat(fd)
         if not stat.S_ISREG(opened.st_mode):
             return Problem(rel, "not_regular", "Not a regular file.")
         if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
             return Problem(rel, "changed_during_read", "The file was replaced while it was being opened.")
-        fd_path = f"/proc/self/fd/{fd}"
-        if os.path.exists(fd_path):
-            # The kernel's view of what was actually opened; closes the directory-swap race.
-            actual = Path(os.path.realpath(fd_path))
-            if not _is_within(actual, root):
-                return Problem(rel, "outside_root", "The opened file lies outside the material folder.")
         digest = hashlib.sha256()
         chunks: list[bytes] = []
         total = 0

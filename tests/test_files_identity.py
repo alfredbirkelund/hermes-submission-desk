@@ -132,3 +132,30 @@ def test_a_file_swapped_while_it_is_opened_is_not_trusted(material, monkeypatch)
     monkeypatch.setattr(os, "open", swapping_open)
     result = files.read_snapshot(material, "a.pdf")
     assert isinstance(result, files.Problem) and result.status == "changed_during_read"
+
+
+def test_a_directory_swapped_for_a_symlink_mid_open_cannot_redirect_the_read(material, tmp_path, monkeypatch):
+    """The parent directory is replaced by a symlink to outside content after the path check."""
+    sys.path.insert(0, str(REPO))
+    from submission_desk import files
+
+    (material / "sub").mkdir()
+    text_pdf(material / "sub" / "doc.pdf", ["inside"])
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    text_pdf(outside / "doc.pdf", ["outside secret"])
+    real_stat = os.stat
+    state = {"swapped": False}
+
+    def swapping_stat(path, *args, **kwargs):  # the window between the realpath check and the open
+        if not state["swapped"] and str(path).endswith("sub/doc.pdf"):
+            state["swapped"] = True
+            os.rename(material / "sub", material / "sub-moved")
+            os.symlink(outside, material / "sub")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", swapping_stat)
+    first = files.read_snapshot(material, "sub/doc.pdf")
+    assert isinstance(first, files.Problem) and first.status == "changed_during_read", first
+    again = files.read_with_retry(material, "sub/doc.pdf")  # the retry sees the symlink and refuses it
+    assert isinstance(again, files.Problem) and again.status == "outside_root", again

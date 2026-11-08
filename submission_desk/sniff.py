@@ -45,6 +45,12 @@ LABELS = {
 
 _ZIP_NAME_LIMIT = 5000
 
+# Magic numbers, written as hex so they read like the format specifications.
+PNG_SIGNATURE = bytes.fromhex("89504e470d0a1a0a")
+JPEG_SIGNATURE = bytes.fromhex("ffd8ff")
+ZIP_SIGNATURE = bytes.fromhex("504b0304")
+UTF8_BOM = bytes.fromhex("efbbbf")
+
 
 def sniff(data: bytes | None, *, size: int | None = None) -> dict:
     if data is None:
@@ -56,13 +62,13 @@ def sniff(data: bytes | None, *, size: int | None = None) -> dict:
         offset = head.index(b"%PDF-")
         version = head[offset + 5:offset + 8].decode("ascii", "replace")
         return {"format": "pdf", "detail": f"PDF header at byte {offset} (version {version})."}
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+    if data.startswith(PNG_SIGNATURE):
         return {"format": "png", "detail": "PNG signature."}
-    if data.startswith(b"\xff\xd8\xff"):
+    if data.startswith(JPEG_SIGNATURE):
         return {"format": "jpeg", "detail": "JPEG signature."}
     if data.startswith((b"GIF87a", b"GIF89a")):
         return {"format": "gif", "detail": "GIF signature."}
-    if data.startswith(b"PK\x03\x04"):
+    if data.startswith(ZIP_SIGNATURE):
         return _sniff_zip(data)
     return _sniff_text(data)
 
@@ -101,7 +107,7 @@ def _sniff_text(data: bytes) -> dict:
     controls = sum(1 for ch in text[:65536] if ord(ch) < 32 and ch not in "\t\n\r\f")
     if controls > 0.01 * max(1, min(len(text), 65536)):
         return {"format": "unknown", "detail": "Mostly control characters; not treated as text."}
-    bom = " with BOM" if data.startswith(b"\xef\xbb\xbf") else ""
+    bom = " with BOM" if data.startswith(UTF8_BOM) else ""
     return {"format": "text", "detail": f"Valid UTF-8 text{bom}."}
 
 

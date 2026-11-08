@@ -16,25 +16,28 @@ from pathlib import Path
 import pytest
 
 from helpers import item
-from pdfs import encrypted_pdf, image_only_pdf, text_pdf
+from pdfs import empty_tree_pdf, encrypted_pdf, image_only_pdf, text_pdf
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "expected_results.json").read_text(encoding="utf-8"))
+WORD_TEXT = FIXTURE["word_fixture"]["text_template"].format(
+    EM_DASH="\N{EM DASH}", BULLET="\N{BULLET}", NBSP="\N{NO-BREAK SPACE}", ZWSP="\N{ZERO WIDTH SPACE}")
 
 
 def _material(root: Path) -> None:
     text_pdf(root / "two-pages.pdf", ["Research statement. Version A.", "Second page of the statement."])
-    text_pdf(root / "three pages \u00fc.pdf", ["One", "Two", "Three"])
+    text_pdf(root / "three pages ü.pdf", ["One", "Two", "Three"])
     text_pdf(root / "plain.pdf", ["Single page"])
     encrypted_pdf(root / "encrypted.pdf", root / "plain.pdf")
     encrypted_pdf(root / "owner-only.pdf", root / "plain.pdf", user_password="")
     good = (root / "two-pages.pdf").read_bytes()
     (root / "corrupt.pdf").write_bytes(good[:400])
     image_only_pdf(root / "scan.pdf")
-    png = (b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+    empty_tree_pdf(root / "no-pages.pdf")
+    png = bytes.fromhex("89504e470d0a1a0a") + bytes(64)  # PNG signature, then padding
     (root / "photo.pdf").write_bytes(png)
     (root / "empty.pdf").write_bytes(b"")
-    (root / "essay.txt").write_text(FIXTURE["word_fixture"]["text"], encoding="utf-8")
-    (root / "essay-zh.txt").write_text("\u6211\u4eec\u7684\u7814\u7a76\u8ba1\u5212\u5305\u62ec\u4e09\u4e2a\u90e8\u5206\u3002" * 20, encoding="utf-8")
+    (root / "essay.txt").write_text(WORD_TEXT, encoding="utf-8")
+    (root / "essay-zh.txt").write_text("我们的研究计划包括三个部分。" * 20, encoding="utf-8")
     (root / "exact-1000.txt").write_bytes(b"a" * 1000)
     (root / "exact-1001.txt").write_bytes(b"a" * 1001)
     (root / "between.bin").write_bytes(b"\x00" * 1048000)

@@ -14,12 +14,42 @@ from html.parser import HTMLParser
 from . import pdfprobe, sniff
 
 _QUOTES = {
-    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'", "\u2032": "'",
-    "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"', "\u2033": '"',
-    "\u00ab": '"', "\u00bb": '"',
+    "\N{LEFT SINGLE QUOTATION MARK}": "'",
+    "\N{RIGHT SINGLE QUOTATION MARK}": "'",
+    "\N{SINGLE LOW-9 QUOTATION MARK}": "'",
+    "\N{SINGLE HIGH-REVERSED-9 QUOTATION MARK}": "'",
+    "\N{PRIME}": "'",
+    "\N{LEFT DOUBLE QUOTATION MARK}": '"',
+    "\N{RIGHT DOUBLE QUOTATION MARK}": '"',
+    "\N{DOUBLE LOW-9 QUOTATION MARK}": '"',
+    "\N{DOUBLE HIGH-REVERSED-9 QUOTATION MARK}": '"',
+    "\N{DOUBLE PRIME}": '"',
+    "\N{LEFT-POINTING DOUBLE ANGLE QUOTATION MARK}": '"',
+    "\N{RIGHT-POINTING DOUBLE ANGLE QUOTATION MARK}": '"',
 }
-_DASHES = {"\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2015", "\u2212", "\ufe58", "\ufe63", "\uff0d"}
-_INVISIBLE = {"\u00ad", "\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"}
+_DASHES = {
+    "\N{HYPHEN}",
+    "\N{NON-BREAKING HYPHEN}",
+    "\N{FIGURE DASH}",
+    "\N{EN DASH}",
+    "\N{EM DASH}",
+    "\N{HORIZONTAL BAR}",
+    "\N{MINUS SIGN}",
+    "\N{SMALL EM DASH}",
+    "\N{SMALL HYPHEN-MINUS}",
+    "\N{FULLWIDTH HYPHEN-MINUS}",
+}
+# Characters that change nothing visible; dropped before matching.
+_INVISIBLE = {
+    "\N{SOFT HYPHEN}",
+    "\N{ZERO WIDTH SPACE}",
+    "\N{ZERO WIDTH NON-JOINER}",
+    "\N{ZERO WIDTH JOINER}",
+    "\N{WORD JOINER}",
+    "\N{ZERO WIDTH NO-BREAK SPACE}",
+}
+
+_LINE_BREAK_HYPHENS = {"-", "\N{HYPHEN}", "\N{SOFT HYPHEN}"}
 
 MAX_SOURCE_CHARS = 2_000_000
 
@@ -134,7 +164,7 @@ def _normalize_with_map(text: str, *, fold_case: bool) -> tuple[str, list[int]]:
     while i < n:
         ch = text[i]
         # "appli-\ncation" -> "application" when a hyphen ends a line between letters.
-        if ch in "-\u2010\u00ad" and i + 1 < n and text[i + 1] == "\n" and out and out[-1].isalpha():
+        if ch in _LINE_BREAK_HYPHENS and i + 1 < n and text[i + 1] == "\n" and out and out[-1].isalpha():
             j = i + 1
             while j < n and text[j].isspace():
                 j += 1
