@@ -263,6 +263,16 @@ def _mapping_row(mapping, effective, fields, documents, results, reviews, attest
             reasons.append(_reason(UNKNOWN, "file_unreadable", f"{doc['rel_path']}: {obs.get('detail')}",
                                    "Make the file readable, then recheck."))
     sha = obs.get("sha256") if obs and obs.get("status") == "ok" else None
+    if doc is not None and obs is not None and obs.get("status") != "ok":
+        # No bytes, so no content checks: the presence result comes from the observation itself.
+        refused = obs["status"] in ("missing", "root_missing", "moved_ambiguous", "outside_root", "invalid_path", "not_regular")
+        mrow["checks"].append({
+            "check": "presence", "status": "fail" if refused else "unknown",
+            "measurement": {"rel_path": obs.get("rel_path"), "problem": obs["status"]}, "limit": None, "units": None,
+            "method": "Open the mapped path inside the material folder.", "detail": obs.get("detail") or "",
+            "estimate": False, "transient": obs["status"] == "changed_during_read",
+            "checked_at": obs.get("verified_at"), "sha256": None,
+        })
     if sha and effective is not None:
         key = (current["id"], effective["id"], sha)
         found = results.get(key)

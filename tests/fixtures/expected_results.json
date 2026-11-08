@@ -1,0 +1,43 @@
+{
+  "description": "Independent expected results for the document-quality gates. Every expectation was derived by hand from the documented rule set below, not from the implementation. Page counts are additionally cross-checked against poppler's pdfinfo at test time; byte sizes come from os.stat; word counts were counted by hand from the text shown.",
+  "rule_set": {
+    "format": "Detected from content signatures only. A rule passes only if the detected format is in the allowed list. Empty or unrecognised content fails a format rule.",
+    "size": "Exact byte count. max_bytes N passes at <= N bytes and fails at N+1. '1 MB' without a stated basis means 1,000,000 bytes if decimal or 1,048,576 if binary: at or below 1,000,000 passes, above 1,048,576 fails, in between is unknown.",
+    "pages": "PDF page-tree count. Unreadable, password-locked or corrupt PDFs are unknown, never 0. Non-PDF files are unknown for page rules.",
+    "words": "whitespace_tokens: maximal runs of non-whitespace (Python str.split; NBSP splits, zero-width space does not). letters_digits_tokens: the same tokens, counting only those containing a letter or digit. Plain text with a stated convention and no exclusions is exact. PDF text, an unresolved convention, or exclusions make the count an estimate: outside the limit under every shown count fails, otherwise unknown. Scripts without spaces between words are unknown.",
+    "encryption": "Any encrypted PDF fails forbid_encryption, including one that opens without a password."
+  },
+  "word_fixture": {
+    "file": "essay.txt",
+    "text": "Well-known results \u2014 and U.S. data \u2014 don't lie: 2027 is near. \u2022 Bullet & more.\nten\u00a0words zero\u200bwidth",
+    "whitespace_tokens": 19,
+    "letters_digits_tokens": 15,
+    "hand_count": "Well-known | results | \u2014 | and | U.S. | data | \u2014 | don't | lie: | 2027 | is | near. | \u2022 | Bullet | & | more. | ten | words | zero\u200bwidth = 19 tokens; dropping the four tokens without letters or digits (\u2014, \u2014, \u2022, &) leaves 15."
+  },
+  "cases": [
+    {"code": "R1", "file": "two-pages.pdf", "rules": {"formats": ["pdf"], "max_pages": 2}, "expect": {"format": "pass", "pages": "pass"}, "pages": 2},
+    {"code": "R2", "file": "three pages \u00fc.pdf", "rules": {"formats": ["pdf"], "max_pages": 2}, "expect": {"format": "pass", "pages": "fail"}, "pages": 3},
+    {"code": "R3", "file": "three pages \u00fc.pdf", "rules": {"formats": ["pdf"], "min_pages": 3, "max_pages": 3}, "expect": {"pages": "pass"}, "pages": 3},
+    {"code": "R4", "file": "encrypted.pdf", "rules": {"formats": ["pdf"], "max_pages": 5, "forbid_encryption": true}, "expect": {"format": "pass", "pages": "unknown", "encryption": "fail"}},
+    {"code": "R5", "file": "owner-only.pdf", "rules": {"formats": ["pdf"], "max_pages": 5, "forbid_encryption": true}, "expect": {"pages": "pass", "encryption": "fail"}, "pages": 1},
+    {"code": "R6", "file": "corrupt.pdf", "rules": {"formats": ["pdf"], "max_pages": 5}, "expect": {"format": "pass", "pages": "unknown"}},
+    {"code": "R7", "file": "scan.pdf", "rules": {"formats": ["pdf"], "max_words": 100, "word_convention": "whitespace_tokens"}, "expect": {"format": "pass", "words": "unknown"}},
+    {"code": "R8", "file": "photo.pdf", "rules": {"formats": ["pdf"]}, "expect": {"format": "fail"}},
+    {"code": "R9", "file": "empty.pdf", "rules": {"formats": ["pdf"]}, "expect": {"format": "fail"}},
+    {"code": "R10", "file": "essay.txt", "rules": {"formats": ["txt"], "max_words": 19, "word_convention": "whitespace_tokens"}, "expect": {"format": "pass", "words": "pass"}, "words": 19},
+    {"code": "R11", "file": "essay.txt", "rules": {"max_words": 18, "word_convention": "whitespace_tokens"}, "expect": {"words": "fail"}, "words": 19},
+    {"code": "R12", "file": "essay.txt", "rules": {"max_words": 15, "word_convention": "letters_digits_tokens"}, "expect": {"words": "pass"}, "words": 15},
+    {"code": "R13", "file": "essay.txt", "rules": {"max_words": 100}, "expect": {"words": "unknown"}, "estimate": true},
+    {"code": "R14", "file": "essay.txt", "rules": {"max_words": 10}, "expect": {"words": "fail"}, "estimate": true},
+    {"code": "R15", "file": "essay.txt", "rules": {"max_words": 100, "word_convention": "letters_digits_tokens", "word_exclusions": ["references"]}, "expect": {"words": "unknown"}, "estimate": true},
+    {"code": "R16", "file": "essay-zh.txt", "rules": {"max_words": 500, "word_convention": "whitespace_tokens"}, "expect": {"words": "unknown"}},
+    {"code": "R17", "file": "exact-1000.txt", "rules": {"max_bytes": 1000}, "expect": {"size": "pass"}, "bytes": 1000},
+    {"code": "R18", "file": "exact-1001.txt", "rules": {"max_bytes": 1000}, "expect": {"size": "fail"}, "bytes": 1001},
+    {"code": "R19", "file": "between.bin", "rules": {"max_size": "1 MB"}, "expect": {"size": "unknown"}, "bytes": 1048000},
+    {"code": "R20", "file": "between.bin", "rules": {"max_size": {"value": 1, "unit": "MB", "basis": "binary"}}, "expect": {"size": "pass"}, "bytes": 1048000},
+    {"code": "R21", "file": "not-there.pdf", "rules": {"formats": ["pdf"]}, "expect": {"presence": "fail"}},
+    {"code": "R22", "file": "blob.bin", "rules": {"formats": ["pdf", "docx"]}, "expect": {"format": "fail"}},
+    {"code": "R23", "file": "two-pages.pdf", "rules": {"max_words": 1000, "word_convention": "whitespace_tokens"}, "expect": {"words": "unknown"}, "estimate": true},
+    {"code": "R24", "file": "two-pages.pdf", "rules": {"max_pages": 2, "max_words": 1000}, "expect": {"pages": "pass", "words": "unknown"}}
+  ]
+}
