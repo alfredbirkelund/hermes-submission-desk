@@ -29,6 +29,7 @@ import {
   SIDEBAR_NAV_AREA,
   Textarea,
   host,
+  queryClient,
   useQuery,
   useQueryClient
 } from '@hermes/plugin-sdk'
@@ -36,6 +37,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 const ID = 'submission-desk'
 const PATH = '/submission-desk'
+const LEDGER_EVENT = 'plugin.' + ID + '.ledger.changed'
 const h = React.createElement
 let rest = null // ctx.rest, bound in register()
 let storage = null
@@ -936,5 +938,10 @@ export default {
       { id: 'nav', area: SIDEBAR_NAV_AREA, data: { path: PATH, label: 'Submission Desk', codicon: 'checklist' } },
       { id: 'open', area: PALETTE_AREA, data: { id: ID + '.open', label: 'Open Submission Desk', keywords: ['application', 'grant', 'scholarship', 'checklist', 'submission'], run: () => host.navigate(PATH) } }
     ])
+    // The backend announces every committed change (agent tools, /submission-desk, other windows),
+    // ids only. Refetch this plugin's queries; the 15 s poll stays as the fallback.
+    const refresh = () => { queryClient.invalidateQueries({ queryKey: [ID] }) }
+    if (typeof ctx.onEvent === 'function') ctx.onEvent(LEDGER_EVENT, refresh)
+    else if (host && typeof host.onEvent === 'function') host.onEvent(LEDGER_EVENT, refresh) // retired with the plugin
   }
 }

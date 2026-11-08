@@ -99,6 +99,19 @@ MUTATIONS = [
     ("Desktop IPC-wrapped REST errors shown raw", "desktop/plugin.js",
      ".replace(/^Error invoking remote method '[^']*':\\s*/, '')", "",
      T + "test_desktop_js.py::test_rest_errors_are_parsed_through_the_desktop_ipc_wrapper"),
+    ("committed change not announced to open windows", "submission_desk/service.py",
+     '        self._mark_changed(ws["id"], result["revision"])\n', "",
+     T + "test_live_updates.py::test_each_committed_change_is_announced_once_after_commit_and_refusals_are_silent"),
+    ("change announced before the transaction commits", "submission_desk/service.py",
+     '        if changed is not None:\n            changed[workspace_id] = int(revision)\n',
+     '        _announce(workspace_id, revision)\n',
+     T + "test_live_updates.py::test_each_committed_change_is_announced_once_after_commit_and_refusals_are_silent"),
+    ("gateway loaded into processes that have none", "submission_desk/service.py",
+     '    if "tui_gateway.server" not in sys.modules:\n        return\n', "",
+     T + "test_live_updates.py::test_a_process_without_a_gateway_announces_nothing_and_keeps_its_stdout"),
+    ("Desktop page ignores backend change events", "desktop/plugin.js",
+     "ctx.onEvent(LEDGER_EVENT, refresh)", "ctx.onEvent(LEDGER_EVENT, () => {})",
+     T + "test_desktop_js.py::test_the_page_registers_and_refreshes_when_the_backend_announces_a_change"),
 ]
 
 

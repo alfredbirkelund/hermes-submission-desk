@@ -8,11 +8,15 @@ agent tools can propose, never decide.
 from __future__ import annotations
 
 import hashlib
+import logging
+import sys
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
-from . import ENGINE_VERSION, actors, checks, files, pdfprobe, readiness, rules as rules_mod, textsrc
+from . import ENGINE_VERSION, PLUGIN_ID, actors, checks, files, pdfprobe, readiness, rules as rules_mod, textsrc
 from .actors import Actor
 from .errors import ConfirmationRequired, DeskError, HumanOnly, Invalid, NotFound, StaleRevision
 from .store import (
@@ -46,6 +50,32 @@ def _actor_label(raw: str | None) -> str:
     return actors.from_dict(loads(raw, {})).label()
 
 
+logger = logging.getLogger(__name__)
+
+
+def _announce(workspace_id: str, revision: int) -> None:
+    """Emit ``plugin.submission-desk.ledger.changed`` through Hermes' public plugin event bridge.
+
+    Under the Desktop backend this reaches every open window, which refetches. Best effort: the
+    write has already committed, so a delivery failure must not turn it into an error.
+
+    Only a process that already runs the gateway (``hermes serve``, its compute-host child, the
+    TUI gateway) has a client to tell. Everywhere else (``hermes chat``, cron, the CLI) the bridge
+    would import the gateway on first use, and that import rebinds ``sys.stdout`` for the whole
+    process, so the call is skipped there and open pages catch up on their next poll.
+    """
+    if "tui_gateway.server" not in sys.modules:
+        return
+    try:
+        from hermes_cli.plugin_events import broadcast_plugin_event
+    except ImportError:  # a Hermes without the bridge: the page falls back to polling
+        return
+    try:
+        broadcast_plugin_event(PLUGIN_ID, "ledger.changed", {"workspace": workspace_id, "revision": int(revision)})
+    except Exception:  # noqa: BLE001 - never fail a committed write over a notification
+        logger.debug("ledger.changed was not delivered", exc_info=True)
+
+
 class Desk:
     def __init__(self, store: Store | None = None, *, clock: Callable[[], datetime] | None = None,
                  probe=pdfprobe.run_probe, data_dir: Callable[[], Path] | None = None):
@@ -53,11 +83,35 @@ class Desk:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._probe = probe
         self._data_dir = data_dir
+        self._local = threading.local()
 
     # ------------------------------------------------------------------ helpers
 
     def now(self) -> str:
         return self._clock().isoformat(timespec="milliseconds")
+
+    @contextmanager
+    def _write_tx(self) -> Iterator[Any]:
+        """A write transaction that tells open Desktop windows about the change once it has committed.
+
+        Nothing is announced when the body raises or the commit fails, and the announcement carries
+        only the workspace id and its revision.
+        """
+        changed: dict[str, int] = {}
+        outer = getattr(self._local, "changed", None)
+        self._local.changed = changed
+        try:
+            with self.store.tx(write=True) as conn:
+                yield conn
+        finally:
+            self._local.changed = outer
+        for workspace_id, revision in changed.items():
+            _announce(workspace_id, revision)
+
+    def _mark_changed(self, workspace_id: str, revision: int) -> None:
+        changed = getattr(self._local, "changed", None)
+        if changed is not None:
+            changed[workspace_id] = int(revision)
 
     def data_dir(self) -> Path:
         if self._data_dir:
@@ -106,6 +160,7 @@ class Desk:
         now = self.now()
         result = dict(result)
         result["revision"] = bump_revision(conn, ws["id"], now)
+        self._mark_changed(ws["id"], result["revision"])
         record_event(conn, workspace_id=ws["id"], actor=actor.to_dict(), type=type_, subject=subject,
                      payload=payload, idempotency_key=idem, result=result, now=now)
         return result
@@ -121,7 +176,7 @@ class Desk:
             raise Invalid(str(exc)) from None
         if timezone_name:
             rules_mod.parse_deadline({"at": "2000-01-01T00:00", "timezone": timezone_name})
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             prior = idempotent_result(conn, idem)
             if prior is not None:
                 return prior
@@ -149,7 +204,7 @@ class Desk:
 
     def delete_workspace(self, actor: Actor, ref: str, *, confirm_token: str | None = None) -> dict:
         _require_human(actor, "delete an application's records", "Delete it from the Desktop page or with /submission-desk delete.")
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             ws = self._ws_row(conn, ref)
             counts = {t: conn.execute(f"SELECT COUNT(*) FROM {t} WHERE workspace_id = ?", (ws["id"],)).fetchone()[0]  # noqa: S608
                       for t in ("requirements", "documents", "reviews", "attestations")}
@@ -197,7 +252,7 @@ class Desk:
         if extracted["status"] != "ok":
             raise Invalid(f"No usable text in {read.rel_path}: {extracted['detail']}",
                           hint="For a scanned document or portal page, paste the relevant text as a text source instead.")
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             prior = idempotent_result(conn, idem)
             if prior is not None:
                 return prior
@@ -228,7 +283,7 @@ class Desk:
             raise Invalid("The pasted source text is empty.")
         if len(body) > MAX_TEXT_SOURCE_CHARS:
             raise Invalid(f"Pasted text is too long ({len(body)} characters; limit {MAX_TEXT_SOURCE_CHARS}).")
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             prior = idempotent_result(conn, idem)
             if prior is not None:
                 return prior
@@ -286,7 +341,7 @@ class Desk:
 
     def add_document(self, actor: Actor, ws_ref: str | None, path: str, *, label: str | None = None,
                      idem: str | None = None) -> dict:
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             prior = idempotent_result(conn, idem)
             if prior is not None:
                 return prior
@@ -413,7 +468,7 @@ class Desk:
 
     def create_requirement(self, actor: Actor, ws_ref: str | None, item: dict, *, idem: str | None = None) -> dict:
         """Agent: stored as a proposal (evidence required). Human: stored confirmed (evidence optional)."""
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             prior = idempotent_result(conn, idem)
             if prior is not None:
                 return prior
@@ -440,7 +495,7 @@ class Desk:
     def revise_requirement(self, actor: Actor, ws_ref: str | None, req_ref: str, item: dict, *,
                            expected_revision: int | None = None, idem: str | None = None) -> dict:
         """New version. Human edits take effect at once; agent revisions wait for confirmation."""
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             prior = idempotent_result(conn, idem)
             if prior is not None:
                 return prior
@@ -475,7 +530,7 @@ class Desk:
         decision = str(decision).strip().lower()
         if decision not in ("confirm", "reject", "withdraw", "restore"):
             raise Invalid("Decision must be confirm, reject, withdraw or restore.")
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             prior = idempotent_result(conn, idem)
             if prior is not None:
                 return prior
@@ -519,7 +574,7 @@ class Desk:
     # ------------------------------------------------------------------ fields
 
     def create_field(self, actor: Actor, ws_ref: str | None, item: dict, *, idem: str | None = None) -> dict:
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             prior = idempotent_result(conn, idem)
             if prior is not None:
                 return prior
@@ -553,7 +608,7 @@ class Desk:
     def revise_field(self, actor: Actor, ws_ref: str | None, field_ref: str, label: str, *,
                      expected_revision: int | None = None, idem: str | None = None) -> dict:
         label = _clean(label, "Portal field label", limit=MAX_LABEL)
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             prior = idempotent_result(conn, idem)
             if prior is not None:
                 return prior
@@ -587,7 +642,7 @@ class Desk:
             raise Invalid("new_field must be an object with the exact portal label.")
         if new_field and field:
             raise Invalid("Give either an existing field or a new field label, not both.")
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             prior = idempotent_result(conn, idem)
             if prior is not None:
                 return prior
@@ -651,7 +706,7 @@ class Desk:
 
     def remove_mapping(self, actor: Actor, ws_ref: str | None, mapping: str, *, expected_revision: int | None = None,
                        idem: str | None = None) -> dict:
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             prior = idempotent_result(conn, idem)
             if prior is not None:
                 return prior
@@ -686,7 +741,7 @@ class Desk:
         read = files.read_with_retry(self._root(ws), doc["rel_path"])
         if isinstance(read, files.Problem):
             raise StaleRevision(f"{doc['rel_path']} cannot be read now ({read.detail}); nothing was recorded.", hint="Recheck.")
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             prior = idempotent_result(conn, idem)
             if prior is not None:
                 return prior
@@ -728,7 +783,7 @@ class Desk:
     # ------------------------------------------------------------------ actions and attestations
 
     def create_action(self, actor: Actor, ws_ref: str | None, item: dict, *, idem: str | None = None) -> dict:
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             prior = idempotent_result(conn, idem)
             if prior is not None:
                 return prior
@@ -764,7 +819,7 @@ class Desk:
         decision = str(decision).lower()
         if decision not in ("confirm", "reject", "withdraw"):
             raise Invalid("Decision must be confirm, reject or withdraw.")
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             prior = idempotent_result(conn, idem)
             if prior is not None:
                 return prior
@@ -812,7 +867,7 @@ class Desk:
             if sha256 and read.sha256 != sha256:
                 raise StaleRevision(f"Not recorded: the file is now revision {read.sha256[:10]} (you saw {sha256[:10]}).",
                                     details={"current_sha256": read.sha256})
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             prior = idempotent_result(conn, idem)
             if prior is not None:
                 return prior
@@ -875,7 +930,7 @@ class Desk:
 
     def revoke_attestation(self, actor: Actor, ws_ref: str | None, attestation_id: str, *, idem: str | None = None) -> dict:
         _require_human(actor, "revoke an attestation", "Use the Desktop page.")
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             prior = idempotent_result(conn, idem)
             if prior is not None:
                 return prior
@@ -891,7 +946,7 @@ class Desk:
     # ------------------------------------------------------------------ conflicts
 
     def flag_conflict(self, actor: Actor, ws_ref: str | None, item: dict, *, idem: str | None = None) -> dict:
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             prior = idempotent_result(conn, idem)
             if prior is not None:
                 return prior
@@ -928,7 +983,7 @@ class Desk:
                          governing: str | None = None, expected_revision: int | None = None, idem: str | None = None) -> dict:
         _require_human(actor, "resolve a conflict between instructions", "Resolve it on the Desktop page or with /submission-desk resolve <code>.")
         resolution = _clean(resolution, "Resolution", limit=1000)
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             prior = idempotent_result(conn, idem)
             if prior is not None:
                 return prior
@@ -957,7 +1012,7 @@ class Desk:
         if unknown:
             raise Invalid(f"Unknown proposal sections: {', '.join(unknown)}.", hint=f"Use: {', '.join(sections)}.")
         report: dict[str, list] = {s: [] for s in sections}
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             ws = self._ws_row(conn, ws_ref)
             refs: dict[str, dict] = {}
 
@@ -1084,7 +1139,7 @@ class Desk:
                 continue
             computed.append((cur, effective, read, checks.run(read, effective.get("rules") or {}, probe=probe)))
         now = self.now()
-        with self.store.tx(write=True) as conn:
+        with self._write_tx() as conn:
             ws = self._ws_row(conn, ws["id"])
             run_id = new_id()
             conn.execute("INSERT INTO check_runs(id, workspace_id, started_at, actor, engine, status) VALUES(?, ?, ?, ?, ?, 'running')",
@@ -1126,6 +1181,7 @@ class Desk:
             conn.execute("UPDATE check_runs SET finished_at = ?, status = 'completed', summary = ? WHERE id = ?",
                          (self.now(), dumps({"documents": len(docs), "computed": len(computed)}), run_id))
             conn.execute("UPDATE workspaces SET last_check_at = ?, last_check_run = ? WHERE id = ?", (now, run_id, ws["id"]))
+            self._mark_changed(ws["id"], ws["revision"])
         out = self.readiness(ws["id"], _fresh=True)
         source_notes = []
         for src in sources:
