@@ -71,3 +71,11 @@ g. Rendered Desktop in an isolated instance.
    special Hyprland workspace, driven over CDP.
 4. Independent review: fresh `hermes chat -q` reviewer processes in a separate reviewer home.
 5. pypdf declared as a bounded Python dependency; MIT licence, copyright Alfred Birkelund.
+
+## Changes after the first independent review
+
+- The applicant chooses the material folder. A folder the agent picks is only proposed, and
+  nothing in it is read until the applicant confirms that exact folder (the reviewer showed one
+  agent tool call could open a workspace over `/etc`).
+- Real-model runs: the Anthropic account had no credit, so the one model-assisted extraction run
+  used OpenAI `gpt-6.1-sol` in the isolated home (see `docs/TEST-MATRIX.md`).
