@@ -59,6 +59,8 @@ def test_conflicting_instructions_stay_visible_until_the_applicant_resolves_them
         host.api("POST", f"/workspaces/{ws}/requirements/{code}/decide", {"version": 1, "decision": "confirm"})
     state = host.api("POST", f"/workspaces/{ws}/check")["body"]
     assert item(state, "R1")["state"] == "conflicting" and item(state, "R2")["state"] == "conflicting"
+    # The headline's parts add up to its total: two conflicting requirements plus the open conflict.
+    assert state["summary"]["headline"] == "3 items need attention: 2 conflicting, 1 open conflict.", state["summary"]
     conflict = state["conflicts"][0]
     assert [e["source"] for e in conflict["excerpts"]] == ["S1", "S2"]
     agent_try = host.tool("submission_desk_propose", {"workspace": ws, "conflicts": [{"resolution": "FAQ wins"}]})

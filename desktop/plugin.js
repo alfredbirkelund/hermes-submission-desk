@@ -135,6 +135,13 @@ function bytes(n) {
   return Number(n).toLocaleString() + ' B'
 }
 
+function timeLeft(hours) {
+  if (typeof hours !== 'number' || isNaN(hours)) return 'time left unknown'
+  if (hours < 0) return 'passed'
+  if (hours < 48) return `${Math.max(0, Math.round(hours))} h left`
+  return `${Math.floor(hours / 24)} days left`
+}
+
 function when(iso) {
   if (!iso) return 'never'
   const d = new Date(iso)
@@ -684,7 +691,7 @@ function RequirementRow({ wsId, data, item, setDialog }) {
         h('div', { style: { ...S.row, ...S.tiny, ...S.muted, gap: 6 } },
           h('span', { style: S.faint }, `${item.code} v${req.version} · ${req.kind.replace('_', ' ')}`),
           (req.rules_text || []).length ? h('span', null, '· ' + req.rules_text.join(' · ')) : null,
-          item.deadline ? h('span', null, `· due ${when(item.deadline.due_utc)} (${item.deadline.remaining_hours} h left)`) : null)),
+          item.deadline ? h('span', null, `· due ${when(item.deadline.due_utc)} (${timeLeft(item.deadline.remaining_hours)})`) : null)),
       h(Button, { size: 'xs', variant: 'ghost', 'aria-expanded': open, onClick: () => setOpen(!open) }, h(Codicon, { name: open ? 'chevron-up' : 'chevron-down', size: 12 }), open ? 'Less' : 'Details')),
     req.excerpt
       ? h('div', { style: { ...S.quote, ...S.small } }, '“' + req.excerpt + '”',

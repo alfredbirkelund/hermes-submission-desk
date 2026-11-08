@@ -23,10 +23,16 @@ MANIFEST_SCHEMA = "submission-desk/manifest/1"
 
 
 def md(text) -> str:
-    """Escape user, document and agent supplied text for Markdown; no raw HTML survives."""
+    """Escape user, document and agent supplied text for Markdown; no raw HTML survives.
+
+    Only characters that can start inline formatting, links, HTML or table cells are escaped, so the
+    raw file stays readable (dates, parentheses and plus signs are left alone). The text is a single
+    line placed after other content, so block markers (#, +, -) at its start cannot take effect.
+    """
     value = " ".join(str(text if text is not None else "").split())
     value = value.replace("\\", "\\\\")
-    return re.sub(r"([`*_{}\[\]<>()#+!|~])", r"\\\1", value)
+    value = re.sub(r"([`*_\[\]<>|~])", r"\\\1", value)
+    return value.replace("](", "]\\(").replace("!\\[", "\\!\\[")
 
 
 def code(text) -> str:
