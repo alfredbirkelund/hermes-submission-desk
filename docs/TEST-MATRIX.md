@@ -70,7 +70,7 @@ unresolved word conventions, ambiguous MB, stale windows, delete confirmation, e
 caching, stored cause, atomic field creation, Desktop error parsing, live refresh, and the 21
 safeguards added after the first independent review (listed in the script).
 
-Latest run: MUTATION_RESULT
+Latest run: **51 of 51 mutations caught** (commit 65732df, one run).
 
 ## Catalog and install gates
 
