@@ -117,3 +117,13 @@ def test_an_interrupted_export_leaves_no_partial_output(host, material, monkeypa
     monkeypatch.setattr(os, "replace", real_replace)
     assert _cli_export(monkeypatch, tmp_path, ws) == 0
     assert len(list(exports.iterdir())) == 1
+
+
+def test_the_cli_says_so_when_there_is_no_application_yet(tmp_path, monkeypatch, capsys):
+    """`hermes submission-desk` right after install must not print nothing."""
+    monkeypatch.setenv("SUBMISSION_DESK_DB", str(tmp_path / "db" / "data.db"))
+    sys.path.insert(0, str(REPO))
+    from submission_desk import commands
+
+    assert commands.run_cli(argparse.Namespace(sd_command=None)) == 0
+    assert "No application workspace yet" in capsys.readouterr().out

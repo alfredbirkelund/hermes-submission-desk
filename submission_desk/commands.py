@@ -342,7 +342,10 @@ def run_cli(args) -> int:
     trigger = actors.Actor("machine", "cli", detail="hermes submission-desk")
     try:
         if command == "list":
-            for row in desk.list_workspaces():
+            rows = desk.list_workspaces()
+            if not rows:
+                print("No application workspace yet. Ask the agent to create one, or use the Desktop page.")
+            for row in rows:
                 print(f"{row['id']}  {row['title']}  ({row['material_root']})  last check: {row['last_check_at'] or 'never'}")
             return 0
         if command == "status":
@@ -362,7 +365,7 @@ def run_cli(args) -> int:
 
 def register(ctx) -> None:
     ctx.register_command(COMMAND, make_handler(ctx), description="Application readiness: what goes where, what is stale, what is yours to do",
-                         args_hint="[status|details|pending|confirm|reject|review|done|verify|resolve|export|delete|help]")
+                         args_hint="[status|details|list|folder|pending|confirm|reject|review|done|verify|resolve|export|delete|help]")
     ctx.register_cli_command(name=COMMAND, help="Submission Desk: application readiness (read-only and export)",
                              setup_fn=setup_cli, handler_fn=run_cli)
 

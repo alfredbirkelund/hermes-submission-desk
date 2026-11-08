@@ -57,7 +57,7 @@ and a second job runs the catalog's own admission command, `hermes plugins valid
 | Replacing an environment-dependent result does not write the revision's final results again | `test_checks.py` | pass |
 | Errors are real `Error` objects (host dialogs show their message); the web dashboard finds a bundle that points to Desktop | `test_desktop_js.py` (2) | pass |
 
-Latest local run: **68 passed** in 258 s (Hermes checkout 2bd378e, v0.23.0 line, Python 3.14, Linux).
+Latest local run: **69 passed** in 187 s (Hermes checkout 2bd378e, v0.23.0 line, Python 3.14, Linux).
 A checkout inside a hidden folder runs too: the tests then put their material folders in `/tmp`.
 
 ## Mutation check
