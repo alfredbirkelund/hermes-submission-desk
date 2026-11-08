@@ -1,0 +1,19 @@
+# Test artifacts and local test dependencies (never committed)
+.test-artifacts/
+.test-deps/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+
+# Local environment
+.env
+.env.*
+*.local
+.venv/
+node_modules/
+
+# Editor
+.idea/
+.vscode/
+*.swp
