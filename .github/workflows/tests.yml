@@ -1,0 +1,42 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: behaviour tests (Hermes ${{ matrix.hermes }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        hermes: ["v0.23.0"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Fetch Hermes Agent ${{ matrix.hermes }} (the host the tests load the plugin into)
+        run: git clone --quiet --depth 1 --branch "${{ matrix.hermes }}" https://github.com/NousResearch/hermes-agent "$RUNNER_TEMP/hermes-agent"
+
+      - name: poppler-utils (independent page-count cross-check)
+        run: sudo apt-get install -y --no-install-recommends poppler-utils >/dev/null
+
+      - name: Desktop bundle parses
+        run: cp desktop/plugin.js "$RUNNER_TEMP/plugin.mjs" && node --check "$RUNNER_TEMP/plugin.mjs"
+
+      - name: Behaviour suite (real plugin loader, tool registry, slash commands and REST router)
+        run: HERMES_ROOT="$RUNNER_TEMP/hermes-agent" scripts/test.sh
+
+      - name: Mutation check (each safeguard's test must fail when the safeguard is removed)
+        run: HERMES_ROOT="$RUNNER_TEMP/hermes-agent" .test-artifacts/venv/bin/python scripts/mutation_check.py
