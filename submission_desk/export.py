@@ -83,7 +83,7 @@ def build_manifest(r: dict, generated_at: str) -> dict:
         "generator": {"plugin": "submission-desk", "version": __version__, "engine": ENGINE_VERSION},
         "workspace": r["workspace"],
         "freshness": {"rechecked_at": r["checked_at"], "fresh": r["fresh"], "revalidated_after_writing": None,
-                      "changed_during_export": []},
+                      "changed_during_export": [], "unreadable": list(r.get("unread") or [])},
         "verdict": r["summary"]["verdict"], "headline": r["summary"]["headline"], "counts": r["summary"]["counts"],
         "responsibility": r["responsibility"],
         "requirements": requirements,
@@ -97,10 +97,16 @@ def render_checklist(r: dict, manifest: dict) -> str:
     out: list[str] = [f"# Hand-back checklist: {md(ws.get('title'))}", ""]
     out.append(f"Generated {md(manifest['generated_at'])} (UTC) by Submission Desk {__version__}. Folder: {code(ws.get('material_root'))}.")
     fresh = manifest["freshness"]
+    unreadable = fresh.get("unreadable") or []
+    changed_list = fresh.get("changed_during_export") or []
     if fresh.get("revalidated_after_writing"):
         out.append(f"Freshness: every listed file was re-read and hashed at {md(fresh['rechecked_at'])} and verified again after this file was written.")
-    else:
-        changed = ", ".join(code(c) for c in fresh.get("changed_during_export") or []) or "unknown"
+    if unreadable:
+        out.append(f"**NOT CURRENT.** These files could not be read at {md(fresh['rechecked_at'])}: "
+                   f"{', '.join(code(c) for c in unreadable)}. Entries for them describe the last revision that could be read, "
+                   "if any. Make them readable, recheck and export again.")
+    if changed_list or (not fresh.get("revalidated_after_writing") and not unreadable):
+        changed = ", ".join(code(c) for c in changed_list) or "unknown"
         out.append(f"**SNAPSHOT ONLY.** These files changed while the export was being written: {changed}. "
                    "The results below describe the revisions listed, not the current files. Recheck and export again.")
     out += ["", f"**{md(manifest['headline'])}**", "", f"> {md(manifest['responsibility'])}", ""]
@@ -127,7 +133,9 @@ def render_checklist(r: dict, manifest: dict) -> str:
         src = req.get("source")
         if src:
             page = f", p. {src['locator'].get('page')}" if src.get("locator") and src["locator"].get("page") else ""
-            out.append(f"- Instruction: {md(src.get('label'))} ({md(src.get('code'))} rev {src.get('revision')}, saved {md(src.get('captured_at'))}{page}): "
+            who = {"agent proposal": "the agent"}.get(src.get("added_by") or "", "you" if (src.get("added_by") or "").startswith("you") else "unknown")
+            out.append(f"- Instruction: {md(src.get('label'))} ({md(src.get('code'))} rev {src.get('revision')}, added by {who}, "
+                       f"saved {md(src.get('captured_at'))}{page}): "
                        f"\u201c{md(src.get('excerpt'))}\u201d (a saved snapshot, not the live portal)")
         else:
             out.append("- Instruction: no source evidence (entered by you)")
@@ -193,6 +201,7 @@ def render_checklist(r: dict, manifest: dict) -> str:
 def export(desk, actor: Actor, ws_ref: str | None) -> dict:
     r = desk.recheck(actor, ws_ref)
     ws = r["workspace"]
+    unread = list(r.get("unread") or [])
     generated = datetime.now(timezone.utc).isoformat(timespec="seconds")
     manifest = build_manifest(r, generated)
     base = desk.data_dir() / "exports"
@@ -204,7 +213,8 @@ def export(desk, actor: Actor, ws_ref: str | None) -> dict:
     try:
         _write(partial / "manifest.json", dumps(manifest))  # provisional, rewritten below
         changed = _revalidate(ws, manifest)
-        manifest["freshness"]["revalidated_after_writing"] = not changed
+        current = not changed and not unread
+        manifest["freshness"]["revalidated_after_writing"] = current
         manifest["freshness"]["changed_during_export"] = changed
         _write(partial / "manifest.json", _pretty(manifest))
         _write(partial / "checklist.md", render_checklist(r, manifest))
@@ -216,13 +226,18 @@ def export(desk, actor: Actor, ws_ref: str | None) -> dict:
         raise
     with desk.store.tx(write=True) as conn:
         record_event(conn, workspace_id=ws["id"], actor=actor.to_dict(), type="exported", subject=final.name,
-                     payload={"revalidated": not changed, "changed": changed, "files": len(manifest["files"])}, now=desk.now())
+                     payload={"revalidated": current, "changed": changed, "unreadable": unread, "files": len(manifest["files"])},
+                     now=desk.now())
+    if unread:
+        note = f"Not current: {len(unread)} file{'s' if len(unread) != 1 else ''} could not be read; make them readable, recheck and export again."
+    elif changed:
+        note = "Snapshot only: some files changed during export; recheck and export again."
+    else:
+        note = "Every listed file revision was re-verified after writing."
     return {
         "ok": True, "directory": str(final), "checklist": str(final / "checklist.md"), "manifest": str(final / "manifest.json"),
-        "revalidated": not changed, "changed_during_export": changed, "files": len(manifest["files"]),
-        "headline": manifest["headline"], "verdict": manifest["verdict"],
-        "note": "Snapshot only: some files changed during export; recheck and export again." if changed else
-                "Every listed file revision was re-verified after writing.",
+        "revalidated": current, "changed_during_export": changed, "unreadable": unread, "files": len(manifest["files"]),
+        "headline": manifest["headline"], "verdict": manifest["verdict"], "note": note,
     }
 
 

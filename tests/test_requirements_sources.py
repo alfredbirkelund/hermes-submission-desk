@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from helpers import item
+from helpers import agent_workspace, item
 from pdfs import text_pdf
 
 CALL = """Synthetic scholarship call 2027 (test fixture)
@@ -18,9 +18,7 @@ def _ws(host, material):
     (material / "call.txt").write_text(CALL, encoding="utf-8")
     (material / "faq.html").write_text(f"<html><body><script>alert(1)</script><p>{FAQ}</p></body></html>", encoding="utf-8")
     text_pdf(material / "statement.pdf", ["Statement", "Page 2", "Page 3"])
-    out = host.tool("submission_desk_workspace", {"action": "create", "title": "Sources", "material_root": str(material),
-                                                   "source_files": ["call.txt", "faq.html"], "documents": ["statement.pdf"]})
-    return out["workspace"]["id"]
+    return agent_workspace(host, "Sources", material, source_files=["call.txt", "faq.html"], documents=["statement.pdf"])
 
 
 def test_source_change_after_confirmation_makes_the_requirement_stale(host, material):

@@ -57,7 +57,18 @@ def short(sha: str | None) -> str:
     return (sha or "")[:10]
 
 
-def derive(state: dict, *, now: datetime, fresh: bool, checked_at: str | None) -> dict:
+def freshness_line(*, fresh: bool, checked_at: str | None, unread: list[str] | None) -> str:
+    """One sentence on how current the result is. It never claims a file was read when it was not."""
+    if not fresh:
+        return f"Snapshot from {checked_at or 'never'}: files have not been re-read since. Recheck to update."
+    if unread:
+        names = ", ".join(unread)
+        return (f"Rechecked just now, but {len(unread)} file{'s' if len(unread) != 1 else ''} could not be read ({names}); "
+                "results for {} are not current.".format("them" if len(unread) != 1 else "it"))
+    return "Current: every mapped file was re-read and hashed just now."
+
+
+def derive(state: dict, *, now: datetime, fresh: bool, checked_at: str | None, unread: list[str] | None = None) -> dict:
     fields = state["fields"]
     documents = state["documents"]
     results = state["results"]
@@ -70,9 +81,6 @@ def derive(state: dict, *, now: datetime, fresh: bool, checked_at: str | None) -
     proposals: list[dict] = []
     for req in state["requirements"]:
         row = _requirement_row(req, state, fields, documents, results, reviews, attestations, conflicts, req_by_id, now)
-        if row["state"] == EXCLUDED:
-            items.append(row)
-            continue
         items.append(row)
         if req.get("pending"):
             proposals.append({"kind": "requirement", "code": req["code"], "id": req["id"],
@@ -104,15 +112,19 @@ def derive(state: dict, *, now: datetime, fresh: bool, checked_at: str | None) -
     else:
         verdict = "no_local_blockers"
         headline = "No blockers found by the checks that ran. Unchecked parts are listed; signing and submitting stay with you."
+    ws_row = state.get("workspace") or {}
+    if ws_row and not ws_row.get("folder_confirmed_at"):
+        folder_first = (f"Confirm the folder first: the agent chose {ws_row.get('material_root')}, and nothing in it is read "
+                        "until you confirm it holds your application files.")
+        headline = folder_first + (" " + headline if verdict == "blocked" else "")
+        verdict = "blocked"
+        blockers += 1
     return {
         "workspace": state["workspace"],
         "fresh": fresh,
         "checked_at": checked_at,
         "derived_at": now.isoformat(timespec="seconds"),
-        "freshness": (
-            "Current: every mapped file was re-read and hashed just now." if fresh else
-            f"Snapshot from {checked_at or 'never'}: files have not been re-read since. Recheck to update."
-        ),
+        "freshness": freshness_line(fresh=fresh, checked_at=checked_at, unread=unread),
         "summary": {"verdict": verdict, "headline": headline, "counts": counts, "blockers": blockers},
         "items": items,
         "actions": actions,
@@ -139,7 +151,8 @@ def _version_view(version: dict | None, sources: dict) -> dict | None:
     if rev_id and rev_id in sources:
         src = sources[rev_id]
         view["source"] = {"code": src["code"], "label": src["label"], "revision": src["revision"],
-                          "captured_at": src["captured_at"], "origin_note": src.get("origin_note")}
+                          "captured_at": src["captured_at"], "origin_note": src.get("origin_note"),
+                          "added_by": src.get("added_by", "")}
     return view
 
 
@@ -167,6 +180,15 @@ def _requirement_row(req, state, fields, documents, results, reviews, attestatio
         row["state"] = AWAITING_CONFIRMATION
         return row
     if effective["status"] == "withdrawn":
+        if pending:
+            # An agent revision of a withdrawn requirement is still a proposal the applicant must see and decide.
+            row["state"] = AWAITING_CONFIRMATION
+            row["states"] = [AWAITING_CONFIRMATION]
+            reasons.append(_reason(AWAITING_CONFIRMATION, "revision_pending",
+                                   f"You marked {req['code']} not applicable; a revised version (v{pending['version']}) is proposed "
+                                   "and does not apply unless you confirm it.",
+                                   "Confirm or reject the revision."))
+            return row
         row["state"] = EXCLUDED
         row["states"] = [EXCLUDED]
         reasons.append(_reason(EXCLUDED, "withdrawn", "Marked not applicable by you."))
@@ -178,7 +200,12 @@ def _requirement_row(req, state, fields, documents, results, reviews, attestatio
     if not effective.get("excerpt"):
         row["no_source_evidence"] = True
     drift = state["source_drift"].get(effective["id"])
-    if drift and not drift["found"]:
+    if drift and drift.get("unreadable"):
+        reasons.append(_reason(STALE, "source_unreadable",
+                               f"The instructions ({drift['source']}) changed (revision {drift['revision']}, captured {drift['captured_at']}) "
+                               f"and the new version cannot be read as text ({drift['detail']}), so the quote cannot be checked.",
+                               "Save a readable copy of the instructions, recheck, and confirm or correct this requirement."))
+    elif drift and not drift["found"]:
         reasons.append(_reason(STALE, "source_changed",
                                f"The source changed (revision {drift['revision']}, captured {drift['captured_at']}) and no longer contains the quoted text.",
                                "Re-read the source and confirm or correct this requirement."))
@@ -283,7 +310,9 @@ def _mapping_row(mapping, effective, fields, documents, results, reviews, attest
         else:
             for result in found:
                 view = dict(result)
-                override = _check_override(attestations, current["id"], effective["id"], sha, result["check"])
+                # Only a check the plugin could not establish can be vouched for by hand; a failure stays one.
+                override = (_check_override(attestations, current["id"], effective["id"], sha, result["check"])
+                            if result["status"] == "unknown" else None)
                 if override:
                     view["attested"] = override
                 mrow["checks"].append(view)
@@ -513,4 +542,15 @@ def _notes(state: dict, documents: dict) -> list[dict]:
         obs = doc["observation"]
         if obs and obs.get("moved_from"):
             notes.append({"code": "moved", "message": f"{doc['code']} moved from {obs['moved_from']} to {obs['rel_path']} (same content)."})
+    for src in state.get("source_list") or []:
+        if src.get("last_problem"):
+            saved = f"revision {src['revision']} saved {src['captured_at']}" if src.get("revision") else "no readable copy"
+            notes.append({"code": "source_unreadable",
+                          "message": f"Instructions {src['code']} ({src['rel_path']}) could not be read at the last recheck "
+                                     f"({src['last_problem_at']}): {src['last_problem']} The saved copy ({saved}) is still used."})
+        elif src.get("unreadable_revision"):
+            bad = src["unreadable_revision"]
+            notes.append({"code": "source_unextractable",
+                          "message": f"Instructions {src['code']} ({src['rel_path']}) changed (revision {bad['revision']}) and no text "
+                                     f"can be extracted from the new version: {bad['detail'] or bad['status']}. Requirements quoting it are stale."})
     return notes

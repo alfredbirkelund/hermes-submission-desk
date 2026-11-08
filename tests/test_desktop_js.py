@@ -53,7 +53,8 @@ def test_rest_errors_are_parsed_through_the_desktop_ipc_wrapper():
         "text_body": "Error invoking remote method 'hermes:api': Error: 502: Bad Gateway",
     }
     out = _run(["parseError"], f"const cases = {json.dumps(cases)};\n"
-               "const out = {}; for (const [k, v] of Object.entries(cases)) out[k] = parseError(new Error(v));\n"
+               "const out = {}; for (const [k, v] of Object.entries(cases)) { const e = parseError(new Error(v)); "
+               "out[k] = {status: e.status, code: e.code, message: e.message, hint: e.hint, details: e.details}; }\n"
                "console.log(JSON.stringify(out));")
     for key in ("wrapped", "bare"):
         assert out[key]["status"] == 409 and out[key]["code"] == "stale_revision", out[key]
@@ -64,8 +65,34 @@ def test_rest_errors_are_parsed_through_the_desktop_ipc_wrapper():
     assert all("invoking remote method" not in v["message"] for v in out.values())
 
 
+@pytest.mark.skipif(NODE is None, reason="node not installed")
+def test_errors_are_real_errors_so_host_dialogs_can_show_their_message():
+    """Desktop's ConfirmDialog shows err.message only for Error instances; anything else reads 'Something went wrong'."""
+    body = json.dumps({"error": "stale_revision", "message": "This application changed since you loaded it (revision 5 -> 6).",
+                       "hint": "Reload and try again."})
+    out = _run(["parseError"], f"const e = parseError(new Error({json.dumps('409: ' + body)}));\n"
+               "console.log(JSON.stringify({isError: e instanceof Error, message: e.message, code: e.code, hint: e.hint, status: e.status}));")
+    assert out == {"isError": True, "message": "This application changed since you loaded it (revision 5 -> 6).",
+                   "code": "stale_revision", "hint": "Reload and try again.", "status": 409}
+
+
 # Areas as the Desktop SDK defines them (window.__HERMES_PLUGIN_SDK__ in Desktop 2026.9.7).
 SDK_CONSTANTS = {"ROUTES_AREA": "routes", "SIDEBAR_NAV_AREA": "sidebar.nav", "PALETTE_AREA": "palette"}
+
+
+@pytest.mark.skipif(NODE is None, reason="node not installed")
+def test_the_web_dashboard_bundle_registers_a_pointer_to_desktop():
+    """The web dashboard loads dashboard/<entry> for every plugin backend; it must exist and register."""
+    manifest = json.loads((PLUGIN_JS.parent.parent / "dashboard" / "manifest.json").read_text(encoding="utf-8"))
+    bundle = (PLUGIN_JS.parent.parent / "dashboard" / manifest["entry"]).read_text(encoding="utf-8")
+    script = ("const registered = []; globalThis.window = {__HERMES_PLUGINS__: {register: (n, c) => registered.push([n, typeof c])},"
+              " __HERMES_PLUGIN_SDK__: {React: {createElement: () => null}}};\n" + bundle +
+              "\nconst bare = []; globalThis.window = {}; \n" + bundle +
+              "\nconsole.log(JSON.stringify({registered, bare}));")
+    assert NODE is not None
+    proc = subprocess.run([NODE, "--input-type=module", "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout) == {"registered": [["submission-desk", "function"]], "bare": []}
 
 
 def _load_plugin(tmp_path: Path, ctx_has_on_event: bool) -> dict:

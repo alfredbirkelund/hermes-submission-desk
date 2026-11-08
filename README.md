@@ -12,8 +12,9 @@ portal). It answers three questions and shows the evidence:
   make are tracked as your actions and recorded as your attestations, never as machine passes.
 
 When a file, a requirement or a field mapping changes, every review that covered the old
-version becomes **stale**, and the history is kept. Readiness is recomputed from current
-evidence on every read. The model cannot set "ready".
+version becomes **stale**, and the history is kept. So does a requirement whose saved
+instructions change so that its quote is gone, or can no longer be read as text. Readiness is
+recomputed from current evidence on every read. The model cannot set "ready".
 
 Submission Desk checks **local readiness only**. It never logs in, uploads, signs or submits,
 and passing its checks does not mean the institution will accept the application.
@@ -58,7 +59,9 @@ Update the Desktop, or right-click **Submission Desk** in the sidebar and choose
 
 1. **Create the workspace.** On the Desktop page enter a name and the folder that holds the
    application's files (a path on the machine running Hermes). Or ask the agent: *"Set up
-   Submission Desk for my Example Fellowship application in ~/applications/fellowship"*.
+   Submission Desk for my Example Fellowship application in ~/applications/fellowship"*. A folder
+   the agent chooses is only proposed: nothing in it is read until you confirm that exact folder
+   (the banner on the Desktop page, or `/submission-desk folder confirm`).
 2. **Add the instructions.** A file in the folder (`.txt`, `.md`, `.html`, `.pdf` with a text
    layer) or text pasted from the portal. A dated copy is kept; it is not the live portal.
 3. **Get requirements.** Ask the agent to *"read the instructions and propose requirements
@@ -76,7 +79,7 @@ Update the Desktop, or right-click **Submission Desk** in the sidebar and choose
    revisions.
 
 Without Desktop, the same loop works in chat: `/submission-desk` (status), `details`,
-`pending`, `confirm`, `reject`, `review`, `done`, `verify`, `resolve`, `export`, `delete`.
+`pending`, `folder`, `confirm`, `reject`, `review`, `done`, `verify`, `resolve`, `export`, `delete`.
 `hermes submission-desk status` prints readiness in a terminal (exit code 2 while blocked).
 
 ## What the checks mean
@@ -92,19 +95,25 @@ Without Desktop, the same loop works in chat: `/submission-desk` (status), `deta
 
 - **Unknown is not pass.** A rule that cannot be evaluated (a page limit on a `.docx`, a scanned
   PDF without a text layer, Chinese text for a word limit) is unknown, with the reason. You can
-  verify it yourself; it is then shown as *verified by you*, bound to that file revision.
+  verify it yourself; it is then shown as *verified by you*, bound to that file revision. Only an
+  unknown can be verified by hand: a failed check stays failed until the file or the rule changes.
+- **Rules belong to a kind.** File rules (format, size, pages, words, encryption) go on document
+  and text requirements, a deadline on a deadline requirement. A rule on a kind that would never
+  check it is refused instead of being shown and ignored.
 - **Deadlines** need a date, a time and a time zone stated in the instructions. Without a time
-  zone the deadline stays unknown.
-- **Freshness.** A recheck re-reads and hashes every mapped file and source. Results shown before
-  a recheck carry their check time and say *Snapshot*. There is no background file watching.
-  Export rechecks first, hashes the files again after writing, and labels the export
-  *SNAPSHOT ONLY* if any file changed meanwhile.
+  zone the deadline stays unknown; an attestation cannot settle it.
+- **Freshness.** A recheck re-reads and hashes every mapped file and source and names any file it
+  could not read. Results shown before a recheck carry their check time and say *Snapshot*. There
+  is no background file watching. Export rechecks first and hashes the files again after writing.
+  It labels the export *NOT CURRENT* if a file could not be read and *SNAPSHOT ONLY* if a file
+  changed meanwhile.
 
 ## Who can do what
 
 | | Agent tools | You (Desktop page, `/submission-desk`) | Check engine |
 |---|---|---|---|
-| create workspace, add sources and files | yes | yes | |
+| create workspace, add sources and files | yes (a folder it chooses is read only after you confirm it) | yes | |
+| confirm the material folder | no | yes | |
 | propose requirements, fields, mappings, actions, conflicts | yes (requirements and conflicts need verbatim quotes) | yes, confirmed at once | |
 | confirm, reject, correct requirements | no | yes | |
 | review a file revision for a field | no | yes | |
@@ -124,11 +133,14 @@ inside a document) from confirming requirements, approving files or attesting ac
 stop a program running as your OS user: such a program can call the Desktop backend with a
 Desktop grant or edit the SQLite file directly. Run untrusted code elsewhere.
 
-File access is limited to the material folder you choose: paths are resolved, `..` and symlinks
-leading outside are refused, each path component is opened without following symlinks, and the
-opened file must be the one that was checked (device and inode). Folders inside hidden directories
-of your home (where keys and Hermes data live) and the Hermes home itself are refused. Original
-files are never written.
+File access is limited to the workspace's material folder, and you choose it: on the Desktop page,
+or by confirming the folder the agent proposed. Until you confirm, nothing in an agent-chosen folder
+is read, so the plugin cannot be used to browse other folders on its own. (Hermes' own file tools
+are not affected by this plugin.) Inside the folder, paths are resolved, `..` and symlinks leading
+outside are refused, each path component is opened without following symlinks, and the opened file
+must be the one that was checked (device and inode). Folders inside hidden directories of your home
+(where keys and Hermes data live) and the Hermes home itself are refused. Original files are never
+written.
 
 ## Privacy
 
@@ -141,15 +153,23 @@ files are never written.
   locally. A file's text reaches the agent only if that file is added as an instruction source and
   read, so add only instructions as sources.
 - PDFs are parsed in a child process with CPU, memory and time limits. HTML sources are reduced to
-  text with the standard library; scripts are dropped and nothing is fetched or executed.
+  text with the standard library in chunks, stopping at the 2,000,000-character cap; scripts are
+  dropped and nothing is fetched or executed. ZIP-based files with more than 5,000 entries are not
+  opened. Text is validated in chunks rather than decoded whole.
+- Every instruction source shows who added it (you or the agent) on the page, in the checklist and
+  in the manifest.
 
 ## Data and retention
 
 - Data follows the active Hermes profile and survives `hermes plugins update` and
   `hermes plugins remove` (the plugin folder is replaced or deleted; `plugin-data/` is not).
   Reinstalling shows the same history.
-- History is append-only: requirement versions, mapping versions, check results, reviews and
-  attestations are added, not rewritten.
+- History is append-only: requirement versions, mapping versions, reviews and attestations are
+  added, not rewritten. Check results are too, with one exception: a result that depended on the
+  environment rather than the file (the PDF engine missing, a timeout) is marked transient and
+  replaced at the next recheck.
+- The test suite sets `SUBMISSION_DESK_DB` to move the database and exports to a test folder. Leave
+  it unset: when set, data no longer follows the Hermes profile.
 - To delete an application's records: Desktop page → *Delete these records…*, or
   `/submission-desk delete`. It shows what will be removed, needs a confirmation, removes only that
   workspace's rows and exports, and never touches your files.
@@ -170,6 +190,7 @@ submission_desk/
   export.py    checklist.md + manifest.json, revalidated after writing
   tools.py, commands.py, textfmt.py           agent tools, slash/CLI, text rendering
 dashboard/plugin_api.py   Desktop backend routes (/api/plugins/submission-desk/...), human actor
+dashboard/dist/index.js   web dashboard stub that points to the Desktop page
 desktop/plugin.js         Desktop page (Hermes UI kit, theme variables, no build step)
 ```
 
@@ -192,6 +213,10 @@ desktop/plugin.js         Desktop page (Hermes UI kit, theme variables, no build
 scripts/test.sh                                         # behavioural suite (real host code, isolated homes)
 .test-artifacts/venv/bin/python scripts/mutation_check.py   # each safeguard's test must fail when it is removed
 ```
+
+`scripts/test.sh` builds the test environment from the Hermes checkout's lock file. Running
+`pytest` directly works too once that environment exists; a checkout inside a hidden folder puts
+the tests' material folders in `/tmp`, because the plugin refuses hidden folders.
 
 `docs/TEST-MATRIX.md` lists every gate, how it is exercised and the latest results, including what
 was not tested.

@@ -8,6 +8,7 @@ templates are dropped and nothing is executed or fetched.
 
 from __future__ import annotations
 
+import codecs
 import unicodedata
 from html.parser import HTMLParser
 
@@ -61,26 +62,38 @@ class _TextExtractor(HTMLParser):
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
+        self.blocks: list[str] = []  # text joined in blocks, so many tiny text nodes do not cost an object each
         self.parts: list[str] = []
+        self.chars = 0
         self._skip_depth = 0
+
+    def _add(self, text: str) -> None:
+        self.parts.append(text)
+        self.chars += len(text)
+        if len(self.parts) >= 4096:
+            self.blocks.append("".join(self.parts))
+            self.parts.clear()
+
+    def text(self) -> str:
+        return "".join(self.blocks) + "".join(self.parts)
 
     def handle_starttag(self, tag, attrs):  # noqa: ANN001
         tag = tag.lower()
         if tag in self._SKIP:
             self._skip_depth += 1
         elif tag in self._BLOCK:
-            self.parts.append("\n")
+            self._add("\n")
 
     def handle_endtag(self, tag):  # noqa: ANN001
         tag = tag.lower()
         if tag in self._SKIP:
             self._skip_depth = max(0, self._skip_depth - 1)
         elif tag in self._BLOCK:
-            self.parts.append("\n")
+            self._add("\n")
 
     def handle_data(self, data):  # noqa: ANN001
         if not self._skip_depth:
-            self.parts.append(data)
+            self._add(data)
 
 
 def _looks_like_html(name: str, text: str) -> bool:
@@ -91,17 +104,50 @@ def _looks_like_html(name: str, text: str) -> bool:
     return head.startswith("<!doctype html") or head.startswith("<html")
 
 
+def _tidy(raw: str) -> str:
+    """Collapse whitespace within each line and keep at most one blank line between lines.
+
+    Lines are joined in blocks as they are cleaned, so a page of many short lines does not keep an
+    object per line alive.
+    """
+    blocks: list[str] = []
+    lines: list[str] = []
+    previous_blank = True  # drops blank lines at the start
+    for line in raw.split("\n"):
+        cleaned = " ".join(line.split())
+        if cleaned or not previous_blank:
+            lines.append(cleaned)
+            previous_blank = not cleaned
+        if len(lines) >= 4096:
+            blocks.append("\n".join(lines))
+            lines = []
+    if lines:
+        blocks.append("\n".join(lines))
+    return "\n".join(blocks).strip()
+
+
 def html_to_text(text: str) -> str:
     parser = _TextExtractor()
     parser.feed(text)
     parser.close()
-    raw = "".join(parser.parts)
-    lines = [" ".join(line.split()) for line in raw.split("\n")]
-    out: list[str] = []
-    for line in lines:
-        if line or (out and out[-1]):
-            out.append(line)
-    return "\n".join(out).strip()
+    return _tidy(parser.text())
+
+
+def _html_bytes_to_text(data: bytes, limit: int) -> tuple[str, bool]:
+    """Reduce HTML to text, feeding it in chunks and stopping once well past ``limit`` characters.
+
+    Returns (text, stopped early). Memory stays near the limit however large the page is.
+    """
+    parser = _TextExtractor()
+    decoder = codecs.getincrementaldecoder("utf-8-sig")(errors="replace")
+    view = memoryview(data)
+    step = 1 << 20
+    for start in range(0, len(data), step):
+        parser.feed(decoder.decode(view[start:start + step], final=start + step >= len(data)))
+        if parser.chars > limit + 65536:
+            return _tidy(parser.text()), True
+    parser.close()
+    return _tidy(parser.text()), False
 
 
 def extract(name: str, data: bytes | None) -> dict:
@@ -109,13 +155,11 @@ def extract(name: str, data: bytes | None) -> dict:
     info = sniff.sniff(data)
     fmt = info["format"]
     if fmt == "text":
-        text = sniff.decode_text(data or b"")
-        if _looks_like_html(name, text):
-            text = html_to_text(text)
-            method = "HTML reduced to text (stdlib html.parser; scripts/styles dropped)"
-        else:
-            method = "UTF-8 text"
-        return _finish(text, None, method)
+        data = data or b""
+        if _looks_like_html(name, data[:4096].decode("utf-8-sig", "ignore")):
+            text, cut = _html_bytes_to_text(data, MAX_SOURCE_CHARS)
+            return _finish(text, None, "HTML reduced to text (stdlib html.parser; scripts/styles dropped)", truncated=cut)
+        return _finish(sniff.decode_text(data, max_chars=MAX_SOURCE_CHARS), None, "UTF-8 text")
     if fmt == "pdf":
         probe = pdfprobe.run_probe(data or b"", want_text=True)
         if probe.get("status") != "ok":
@@ -141,8 +185,8 @@ def extract(name: str, data: bytes | None) -> dict:
             "detail": f"{sniff.LABELS.get(fmt, fmt)} sources are not supported; paste the text instead."}
 
 
-def _finish(text: str, pages, method: str) -> dict:
-    truncated = len(text) > MAX_SOURCE_CHARS
+def _finish(text: str, pages, method: str, *, truncated: bool = False) -> dict:
+    truncated = truncated or len(text) > MAX_SOURCE_CHARS
     text = text[:MAX_SOURCE_CHARS]
     if not text.strip():
         return {"status": "no_text", "text": "", "pages": pages, "method": method,

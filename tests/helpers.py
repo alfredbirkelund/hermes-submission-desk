@@ -56,3 +56,22 @@ def item(readiness: dict, code: str) -> dict:
         if row["code"] == code:
             return row
     raise KeyError(code)
+
+
+def agent_workspace(host: "Host", title: str, material: Path, **adds) -> str:
+    """A workspace the agent sets up: it chooses the folder, the applicant confirms it, the agent adds files.
+
+    Returns the workspace id. Fails loudly if any step is refused.
+    """
+    created = host.tool("submission_desk_workspace", {"action": "create", "title": title, "material_root": str(material)})
+    assert "workspace" in created, created
+    ws = created["workspace"]["id"]
+    steps = [{"op": "api", "method": "POST", "path": f"/workspaces/{ws}/folder/confirm", "json": {"material_root": str(material)}}]
+    if adds:
+        steps.append({"op": "tool", "name": "submission_desk_workspace", "args": {"action": "add", "workspace": ws, **adds}})
+    out = host.run(steps)
+    assert out[0]["status"] == 200, out[0]
+    if adds:
+        assert "errors" not in out[1]["result"], out[1]["result"]
+    return ws
+

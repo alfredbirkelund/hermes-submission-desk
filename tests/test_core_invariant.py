@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 
-from helpers import item
+from helpers import agent_workspace, item
 from pdfs import replace_same_size, text_pdf
 
 INSTRUCTIONS = """Demo Research Fellowship 2027: how to apply (synthetic fixture)
@@ -21,12 +21,7 @@ INSTRUCTIONS = """Demo Research Fellowship 2027: how to apply (synthetic fixture
 def _setup_reviewed(host, material):
     (material / "call.txt").write_text(INSTRUCTIONS, encoding="utf-8")
     text_pdf(material / "statement.pdf", ["Research statement. Version A.", "Second page."])
-    created = host.tool("submission_desk_workspace", {
-        "action": "create", "title": "Demo Research Fellowship 2027", "material_root": str(material),
-        "source_files": ["call.txt"], "documents": ["statement.pdf"],
-    })
-    assert "error" not in created, created
-    ws = created["workspace"]["id"]
+    ws = agent_workspace(host, "Demo Research Fellowship 2027", material, source_files=["call.txt"], documents=["statement.pdf"])
     proposed = host.tool("submission_desk_propose", {
         "workspace": ws,
         "requirements": [{"ref": "r1", "statement": "Research statement as a PDF of at most 2 pages", "kind": "document",

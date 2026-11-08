@@ -34,7 +34,8 @@ WORKSPACE_SCHEMA = {
     "name": "submission_desk_workspace",
     "description": (
         "Submission Desk (application readiness). Set up and inspect the workspace for ONE application (grant, "
-        "scholarship, university). Actions: create (title + absolute material_root folder holding the application files), "
+        "scholarship, university). Actions: create (title + absolute material_root folder holding the application files; "
+        "the applicant must confirm a folder you choose before its files are read), "
         "add (instruction sources as files or pasted portal text, and documents to check), list, read_source (read a "
         "source's saved text so you can quote it verbatim). Use it only when the user is working on an application."
     ),
@@ -206,7 +207,12 @@ def _workspace(desk: Desk, actor: actors.Actor, args: dict) -> dict:
         created = desk.create_workspace(actor, args.get("title"), args.get("material_root"), timezone_name=args.get("timezone"))
         ws_ref = created["workspace"]["id"]
         added = _add(desk, actor, ws_ref, args)
-        return {**created, **added, "next": "Read the sources (read_source) and propose requirements with exact excerpts."}
+        if not created["workspace"].get("folder_confirmed"):
+            step = ("Ask the applicant to confirm the folder (Submission Desk page or /submission-desk folder confirm), "
+                    "then add the files with action 'add'. Pasted text can be added and quoted now.")
+        else:
+            step = "Read the sources (read_source) and propose requirements with exact excerpts."
+        return {**created, **added, "next": step}
     if action == "add":
         ws = desk.workspace(args.get("workspace"))
         return {"workspace": {"id": ws["id"], "title": ws["title"]}, **_add(desk, actor, ws["id"], args)}

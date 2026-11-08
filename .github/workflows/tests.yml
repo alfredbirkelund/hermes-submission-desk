@@ -40,3 +40,37 @@ jobs:
 
       - name: Mutation check (each safeguard's test must fail when the safeguard is removed)
         run: HERMES_ROOT="$RUNNER_TEMP/hermes-agent" .test-artifacts/venv/bin/python scripts/mutation_check.py
+
+  catalog-gate:
+    # The admission check the plugin catalog runs on a pinned commit, run here on every push so a
+    # catalog PR never discovers a failure first. Mirrors plugin-catalog-ci.yml in hermes-agent.
+    name: catalog admission gate (hermes plugins validate --install-deps)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Hermes Agent v0.23.0 (full history, so it can tell its own version)
+        uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          ref: v0.23.0
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+
+      - name: Prepare Hermes the way the catalog CI does
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: python
+          extras: '[]'
+
+      - name: This plugin at this commit (a clean tree, as the catalog clones it)
+        uses: actions/checkout@v4
+        with:
+          path: _catalog-candidate/submission-desk
+          persist-credentials: false
+
+      - name: hermes plugins validate --install-deps
+        run: |
+          export HERMES_HOME="$RUNNER_TEMP/hermes-home"
+          mkdir -p "$HERMES_HOME"
+          timeout 600 hermes plugins validate --install-deps "$GITHUB_WORKSPACE/_catalog-candidate/submission-desk" </dev/null

@@ -8,12 +8,15 @@ boundary, not a sandbox (see README, "Threat model").
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 import sys
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable
 
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Body, Depends, Query, Request
 from fastapi.responses import JSONResponse
 
 _CORE = "hermes_submission_desk_core"
@@ -40,7 +43,15 @@ def _mods():
             importlib.import_module(f"{_CORE}.errors"), importlib.import_module(f"{_CORE}.export"))
 
 
-router = APIRouter()
+# The route a request came in on, so a request key only ever deduplicates the same request.
+_ROUTE: ContextVar[str] = ContextVar("submission_desk_route", default="")
+
+
+async def _remember_route(request: Request) -> None:
+    _ROUTE.set(f"{request.method} {request.url.path}")
+
+
+router = APIRouter(dependencies=[Depends(_remember_route)])
 
 
 def _call(fn: Callable[..., Any]):
@@ -58,14 +69,35 @@ def _call(fn: Callable[..., Any]):
                                                       "hint": "Nothing was changed by this failed request."})
 
 
+def _int(payload: dict, key: str, default: int | None = 0) -> int | None:
+    """A whole number from the request body; anything else is the caller's mistake (422), not ours (500)."""
+    value = payload.get(key)
+    if value is None or value == "":
+        return default
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value.strip())
+    raise _mods()[3].Invalid(f"{key} must be a whole number, not {json.dumps(value)[:40]}.")
+
+
 def _rev(payload: dict) -> int | None:
-    value = payload.get("expected_revision")
-    return int(value) if value is not None else None
+    return _int(payload, "expected_revision", None)
 
 
 def _idem(payload: dict) -> str | None:
+    """The caller's request key, scoped to this route and this exact body.
+
+    A retry of the same request returns the first result. The same key on another route is another
+    request; the same key with a different body on this route is refused rather than answered from
+    the first result (see store.idempotent_result).
+    """
     key = payload.get("idempotency_key")
-    return str(key)[:100] if key else None
+    if not key:
+        return None
+    body = {k: v for k, v in payload.items() if k != "idempotency_key"}
+    fingerprint = hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
+    return f"{_ROUTE.get()}\x1f{str(key)[:100]}\x1f{fingerprint}"
 
 
 @router.get("/health")
@@ -83,6 +115,12 @@ def list_workspaces():
 def create_workspace(payload: dict = Body(default={})):
     return _call(lambda d, h, e: d.create_workspace(h, payload.get("title"), payload.get("material_root"),
                                                     timezone_name=payload.get("timezone") or None, idem=_idem(payload)))
+
+
+@router.post("/workspaces/{ws}/folder/confirm")
+def confirm_folder(ws: str, payload: dict = Body(default={})):
+    return _call(lambda d, h, e: d.confirm_folder(h, ws, payload.get("material_root"), expected_revision=_rev(payload),
+                                                  idem=_idem(payload)))
 
 
 @router.get("/workspaces/{ws}")
@@ -135,7 +173,7 @@ def revise_requirement(ws: str, code: str, payload: dict = Body(default={})):
 
 @router.post("/workspaces/{ws}/requirements/{code}/decide")
 def decide_requirement(ws: str, code: str, payload: dict = Body(default={})):
-    return _call(lambda d, h, e: d.decide_requirement(h, ws, code, int(payload.get("version") or 0), payload.get("decision"),
+    return _call(lambda d, h, e: d.decide_requirement(h, ws, code, _int(payload, "version"), payload.get("decision"),
                                                       note=payload.get("note"), expected_revision=_rev(payload), idem=_idem(payload)))
 
 
@@ -167,8 +205,8 @@ def remove_mapping(ws: str, code: str, payload: dict = Body(default={})):
 @router.post("/workspaces/{ws}/mappings/{code}/review")
 def review_mapping(ws: str, code: str, payload: dict = Body(default={})):
     return _call(lambda d, h, e: d.review_mapping(
-        h, ws, code, decision=payload.get("decision"), mapping_version=int(payload.get("mapping_version") or 0),
-        requirement_version=int(payload.get("requirement_version") or 0), sha256=str(payload.get("sha256") or ""),
+        h, ws, code, decision=payload.get("decision"), mapping_version=_int(payload, "mapping_version"),
+        requirement_version=_int(payload, "requirement_version"), sha256=str(payload.get("sha256") or ""),
         note=payload.get("note"), expected_revision=_rev(payload), idem=_idem(payload)))
 
 
@@ -180,13 +218,13 @@ def create_action(ws: str, payload: dict = Body(default={})):
 
 @router.post("/workspaces/{ws}/actions/{code}/decide")
 def decide_action(ws: str, code: str, payload: dict = Body(default={})):
-    return _call(lambda d, h, e: d.decide_action(h, ws, code, int(payload.get("version") or 0), payload.get("decision"),
+    return _call(lambda d, h, e: d.decide_action(h, ws, code, _int(payload, "version"), payload.get("decision"),
                                                  expected_revision=_rev(payload), idem=_idem(payload)))
 
 
 @router.post("/workspaces/{ws}/attest")
 def attest(ws: str, payload: dict = Body(default={})):
-    return _call(lambda d, h, e: d.attest(h, ws, payload.get("subject"), version=int(payload.get("version") or 0),
+    return _call(lambda d, h, e: d.attest(h, ws, payload.get("subject"), version=_int(payload, "version"),
                                           statement=payload.get("statement"), check=payload.get("check") or None,
                                           mapping=payload.get("mapping") or None, sha256=payload.get("sha256") or None,
                                           expected_revision=_rev(payload), idem=_idem(payload)))

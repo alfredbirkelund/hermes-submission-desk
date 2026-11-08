@@ -15,20 +15,17 @@ from .errors import Invalid
 from .words import CONVENTIONS
 
 KINDS = ("document", "text", "human_action", "attestation", "deadline", "other")
-KIND_HELP = {
-    "document": "a file uploaded to a portal field",
-    "text": "text pasted into a portal text box (keep the answer in a .txt file to check it)",
-    "human_action": "something only you can do, such as signing or requesting an official document",
-    "attestation": "a statement only you can confirm, such as eligibility",
-    "deadline": "a submission deadline",
-    "other": "anything else; tracked, never machine-passed",
-}
 
 WORD_CONVENTIONS = tuple(CONVENTIONS) + ("unresolved",)
-_ALLOWED = {
+_FILE_RULES = {
     "formats", "max_size", "max_bytes", "min_pages", "max_pages", "min_words", "max_words",
-    "word_convention", "word_exclusions", "forbid_encryption", "deadline",
+    "word_convention", "word_exclusions", "forbid_encryption",
 }
+_ALLOWED = _FILE_RULES | {"deadline"}
+# The rules each kind's checks evaluate. A rule on a kind that never evaluates it would be shown
+# but never checked, so it is refused.
+_RULES_BY_KIND = {"document": _FILE_RULES, "text": _FILE_RULES, "deadline": {"deadline"},
+                  "human_action": set(), "attestation": set(), "other": set()}
 
 _UNITS = {
     "b": (1, 1), "byte": (1, 1), "bytes": (1, 1),
@@ -147,6 +144,17 @@ def normalize(rules: dict | None, kind: str) -> dict:
     if unknown:
         raise Invalid(f"Unsupported rule keys: {', '.join(unknown)}.",
                       hint=f"Supported: {', '.join(sorted(_ALLOWED))}. Unsupported rules stay in the statement text and are never machine-passed.")
+    present = {key for key, value in rules.items() if value not in (None, "", [], {})}
+    unchecked = sorted(present - _RULES_BY_KIND.get(kind, set()))
+    if unchecked:
+        if "deadline" in unchecked:
+            raise Invalid("A deadline is its own requirement: add it with kind 'deadline' so it is checked.",
+                          hint="Keep this requirement's other rules here.")
+        if kind == "deadline":
+            raise Invalid(f"A deadline requirement only takes a deadline rule, not {', '.join(unchecked)}.")
+        raise Invalid(f"{kind.replace('_', ' ').capitalize()} requirements are confirmed by you, not machine-checked, "
+                      f"so they take no rules ({', '.join(unchecked)}).",
+                      hint="Keep the condition in the statement; you confirm it when it is true or done.")
     out: dict = {}
     if rules.get("formats") is not None:
         values = rules["formats"]

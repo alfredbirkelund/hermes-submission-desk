@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import sys
 import threading
 from contextlib import contextmanager
@@ -18,7 +19,7 @@ from typing import Any, Callable, Iterator
 
 from . import ENGINE_VERSION, PLUGIN_ID, actors, checks, files, pdfprobe, readiness, rules as rules_mod, textsrc
 from .actors import Actor
-from .errors import ConfirmationRequired, DeskError, HumanOnly, Invalid, NotFound, StaleRevision
+from .errors import ConfirmationRequired, DeskError, FolderUnconfirmed, HumanOnly, Invalid, NotFound, StaleRevision
 from .store import (
     WORKSPACE_TABLES, Store, allocate_code, bump_revision, dumps, idempotent_result, loads, new_id,
     record_event, utcnow,
@@ -52,6 +53,11 @@ def _actor_label(raw: str | None) -> str:
 
 logger = logging.getLogger(__name__)
 
+# Whether a quote still occurs in a saved source revision, keyed by (revision id, quote). Revisions
+# are immutable and their ids unique, so the cache is shared by every Desk in the process: the
+# Desktop backend builds a Desk per request and polls readiness every few seconds.
+_DRIFT_CACHE: dict[tuple[str, str], bool] = {}
+
 
 def _announce(workspace_id: str, revision: int) -> None:
     """Emit ``plugin.submission-desk.ledger.changed`` through Hermes' public plugin event bridge.
@@ -84,6 +90,7 @@ class Desk:
         self._probe = probe
         self._data_dir = data_dir
         self._local = threading.local()
+        self._drift_cache = _DRIFT_CACHE
 
     # ------------------------------------------------------------------ helpers
 
@@ -182,21 +189,62 @@ class Desk:
                 return prior
             now = self.now()
             ws_id = new_id()
+            # A person who picks the folder has chosen it. A folder the agent picks is only proposed: nothing
+            # in it is read until the applicant confirms that exact folder (confirm_folder).
+            confirmed = (now, dumps(actor.to_dict())) if actor.is_human else (None, None)
             conn.execute(
-                "INSERT INTO workspaces(id, title, material_root, timezone, created_at, created_by, updated_at, revision) "
-                "VALUES(?, ?, ?, ?, ?, ?, ?, 1)",
-                (ws_id, title, str(root), timezone_name, now, dumps(actor.to_dict()), now),
+                "INSERT INTO workspaces(id, title, material_root, timezone, created_at, created_by, updated_at, revision, "
+                "folder_confirmed_at, folder_confirmed_by) VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+                (ws_id, title, str(root), timezone_name, now, dumps(actor.to_dict()), now, *confirmed),
             )
-            result = {"ok": True, "workspace": {"id": ws_id, "title": title, "material_root": str(root)}, "revision": 1}
+            result = {"ok": True, "workspace": {"id": ws_id, "title": title, "material_root": str(root),
+                                                "folder_confirmed": actor.is_human}, "revision": 1}
+            if not actor.is_human:
+                result["note"] = (f"The applicant must confirm the folder {root} before anything in it is read "
+                                  "(Submission Desk page, or /submission-desk folder confirm). Pasted text works meanwhile.")
             record_event(conn, workspace_id=ws_id, actor=actor.to_dict(), type="workspace_created", subject=ws_id,
                          payload={"title": title, "material_root": str(root)}, idempotency_key=idem, result=result, now=now)
             return result
 
+    def confirm_folder(self, actor: Actor, ws_ref: str | None, material_root: str, *,
+                       expected_revision: int | None = None, idem: str | None = None) -> dict:
+        """The applicant confirms that the folder shown to them is their application folder."""
+        _require_human(actor, "confirm which folder holds the application files",
+                       "Ask the applicant to confirm it on the Submission Desk page or with /submission-desk folder confirm.")
+        with self._write_tx() as conn:
+            prior = idempotent_result(conn, idem)
+            if prior is not None:
+                return prior
+            ws = self._ws_row(conn, ws_ref)
+            self._check_revision(ws, expected_revision)
+            try:
+                seen = str(files.resolve_root(material_root)) if material_root else ""
+            except ValueError:
+                seen = ""
+            if seen != ws["material_root"]:
+                raise StaleRevision(f"The folder for this application is {ws['material_root']}, not {material_root or '(none)'}; "
+                                    "nothing was confirmed.", hint="Reload and confirm the folder shown.",
+                                    details={"material_root": ws["material_root"]})
+            if ws.get("folder_confirmed_at"):
+                return {"ok": True, "folder": self._folder_view(ws), "revision": ws["revision"], "note": "Already confirmed."}
+            now = self.now()
+            conn.execute("UPDATE workspaces SET folder_confirmed_at = ?, folder_confirmed_by = ? WHERE id = ?",
+                         (now, dumps(actor.to_dict()), ws["id"]))
+            ws = {**ws, "folder_confirmed_at": now, "folder_confirmed_by": dumps(actor.to_dict())}
+            result = {"ok": True, "folder": self._folder_view(ws)}
+            return self._finish(conn, ws, actor, "folder_confirmed", ws["id"], {"material_root": ws["material_root"]}, result, idem)
+
+    @staticmethod
+    def _folder_view(ws: dict) -> dict:
+        return {"path": ws["material_root"], "chosen_by": _actor_label(ws["created_by"]),
+                "confirmed": bool(ws.get("folder_confirmed_at")), "confirmed_at": ws.get("folder_confirmed_at"),
+                "confirmed_by": _actor_label(ws["folder_confirmed_by"]) if ws.get("folder_confirmed_by") else ""}
+
     def list_workspaces(self) -> list[dict]:
         with self.store.tx() as conn:
-            rows = conn.execute("SELECT id, title, material_root, timezone, created_at, updated_at, revision, last_check_at "
-                                "FROM workspaces ORDER BY updated_at DESC").fetchall()
-            return [dict(r) for r in rows]
+            rows = conn.execute("SELECT id, title, material_root, timezone, created_at, updated_at, revision, last_check_at, "
+                                "folder_confirmed_at FROM workspaces ORDER BY updated_at DESC").fetchall()
+            return [{**dict(r), "folder_confirmed": bool(r["folder_confirmed_at"])} for r in rows]
 
     def workspace(self, ref: str | None) -> dict:
         with self.store.tx() as conn:
@@ -316,6 +364,22 @@ class Desk:
                            (src_id,)).fetchone()
         return dict(row) if row else None
 
+    def _newest_source_revision(self, conn, src_id: str) -> dict | None:
+        row = conn.execute("SELECT * FROM source_revisions WHERE source_id = ? ORDER BY revision DESC LIMIT 1", (src_id,)).fetchone()
+        return dict(row) if row else None
+
+    def _locate_cached(self, revision: dict, excerpt: str) -> bool:
+        """Whether a quote still occurs in a saved source revision. Revisions never change, so the answer
+        is cached per (revision, quote): readiness is read on every page poll."""
+        key = (revision["id"], excerpt)
+        cache = self._drift_cache
+        if key not in cache:
+            if len(cache) >= 1024:
+                cache.clear()
+            found = textsrc.locate(revision["text"] or "", excerpt, loads(revision["pages"], None))
+            cache[key] = found["match"] != "none"
+        return cache[key]
+
     def read_source(self, ws_ref: str | None, source_ref: str, *, offset: int = 0, limit: int = 12000) -> dict:
         with self.store.tx() as conn:
             ws = self._ws_row(conn, ws_ref)
@@ -409,6 +473,9 @@ class Desk:
         return {"material_root": str(root), "files": entries, "truncated": truncated}
 
     def _root(self, ws: dict) -> Path:
+        if not ws.get("folder_confirmed_at"):
+            raise FolderUnconfirmed(f"The applicant has not confirmed the folder {ws['material_root']} yet, so nothing in it is read.",
+                                    hint="The applicant confirms it on the Submission Desk page or with /submission-desk folder confirm.")
         try:
             return files.resolve_root(ws["material_root"])
         except ValueError as exc:
@@ -876,12 +943,14 @@ class Desk:
             subject_type, row, ver, doc_now = self._attestation_subject(conn, ws, subject, version, check, mapping)
             if (doc_now or {}).get("id") != (doc or {}).get("id"):
                 raise StaleRevision("The item changed while it was being attested; nothing was recorded.", hint="Reload and try again.")
-            if read is not None:
-                self._record_observation(conn, ws["id"], doc["id"], read, self.now())
             mapping_version_id = requirement_version_id = None
             if subject_type == "check":
+                assert read is not None and check, "a check attestation always reads its file"
                 mapping_version_id = ver["mapping_version_id"]
                 requirement_version_id = ver["id"]
+                self._require_unknown_check(conn, mapping_version_id, requirement_version_id, read.sha256, check)
+            if read is not None:
+                self._record_observation(conn, ws["id"], doc["id"], read, self.now())
             att_id = new_id()
             conn.execute("INSERT INTO attestations(id, workspace_id, subject_type, subject_id, subject_version_id, mapping_version_id, requirement_version_id, document_id, sha256, check_name, statement, actor, created_at) "
                          "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -891,6 +960,23 @@ class Desk:
                                                   "sha256": read.sha256 if read else None,
                                                   "note": "Recorded as your attestation, not as a verification by the plugin."}}
             return self._finish(conn, ws, actor, "attested", row["code"], {"statement": statement, "check": check}, result, idem)
+
+    @staticmethod
+    def _require_unknown_check(conn, mapping_version_id: str, requirement_version_id: str, sha256: str, check: str) -> None:
+        """Only a check the plugin could not establish may be vouched for by hand; a failure stays a failure."""
+        row = conn.execute("SELECT status FROM check_results WHERE mapping_version_id = ? AND requirement_version_id = ? "
+                           "AND sha256 = ? AND check_name = ? AND engine = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                           (mapping_version_id, requirement_version_id, sha256, check, ENGINE_VERSION)).fetchone()
+        if row is None:
+            raise Invalid(f"The {check} check has not run on this file revision. Recheck first: only a check the plugin "
+                          "could not establish can be verified by hand.")
+        if row["status"] == "fail":
+            raise Invalid(f"Only a check the plugin could not establish can be verified by hand, and the {check} check "
+                          "failed on this revision.",
+                          hint="Fix the file and recheck, or correct the requirement if its rule is wrong.")
+        if row["status"] != "unknown":
+            raise Invalid(f"The {check} check already passed on this revision; only a check the plugin could not "
+                          "establish can be verified by hand.")
 
     def _attestation_subject(self, conn, ws, subject: str, version: int, check: str | None, mapping: str | None):
         code = str(subject).strip().upper()
@@ -926,6 +1012,9 @@ class Desk:
         if ver["kind"] in ("document", "text"):
             raise Invalid(f"{req['code']} is satisfied by its mapped file and your review, not by an attestation.",
                           hint="To vouch for an unknown check, attest that check on the mapping.")
+        if ver["kind"] == "deadline":
+            raise Invalid(f"{req['code']} is a deadline: the instructions settle it, not an attestation. If they state the "
+                          "time zone, correct the requirement with it; otherwise ask the institution.")
         return "requirement", req, ver, None
 
     def revoke_attestation(self, actor: Actor, ws_ref: str | None, attestation_id: str, *, idem: str | None = None) -> dict:
@@ -1078,17 +1167,22 @@ class Desk:
                 "(SELECT MAX(seq) FROM observations WHERE document_id = o.document_id AND status = 'ok')", (ws["id"],)).fetchall()}
             sources = [dict(r) for r in conn.execute("SELECT * FROM sources WHERE workspace_id = ? AND kind = 'file'", (ws["id"],)).fetchall()]
             latest_src = {s["id"]: self._latest_source_revision(conn, s["id"]) for s in sources}
+            newest_src = {s["id"]: self._newest_source_revision(conn, s["id"]) for s in sources}
         root_problem = ""
-        try:
-            root: Path | None = files.resolve_root(ws["material_root"])
-        except ValueError as exc:
-            root = None
-            root_problem = str(exc)
+        unconfirmed = not ws.get("folder_confirmed_at")
+        root: Path | None = None
+        if unconfirmed:
+            root_problem = "The applicant has not confirmed this folder yet."
+        else:
+            try:
+                root = files.resolve_root(ws["material_root"])
+            except ValueError as exc:
+                root_problem = str(exc)
         reads: dict[str, Any] = {}
         moves: dict[str, str] = {}
         for doc in docs:
             if root is None:
-                reads[doc["id"]] = files.Problem(doc["rel_path"], "root_missing", root_problem)
+                reads[doc["id"]] = files.Problem(doc["rel_path"], "folder_unconfirmed" if unconfirmed else "root_missing", root_problem)
                 continue
             read = files.read_with_retry(root, doc["rel_path"])
             if isinstance(read, files.Problem) and read.status == "missing" and doc["id"] in last_ok:
@@ -1104,15 +1198,21 @@ class Desk:
                                          "Not found at its path; the same content exists at several places.", candidates=candidates)
             reads[doc["id"]] = read
         source_reads = {}
+        source_problems: dict[str, str | None] = {}
         for src in sources:
+            if unconfirmed:
+                continue
             if root is None:
+                source_problems[src["id"]] = root_problem
                 continue
             read = files.read_with_retry(root, src["rel_path"])
-            prev = latest_src.get(src["id"])
-            if isinstance(read, files.Snapshot) and (prev is None or prev["sha256"] != read.sha256):
+            if isinstance(read, files.Problem):
+                source_problems[src["id"]] = read.detail
+                continue
+            source_problems[src["id"]] = None
+            newest = newest_src.get(src["id"])
+            if newest is None or newest["sha256"] != read.sha256:
                 source_reads[src["id"]] = (read, textsrc.extract(read.rel_path, read.data))
-            elif isinstance(read, files.Problem):
-                source_reads[src["id"]] = (read, None)
         # Machine checks for (current mapping version, effective requirement version, current bytes).
         memo: dict[tuple, dict] = {}
 
@@ -1146,14 +1246,17 @@ class Desk:
                          (run_id, ws["id"], now, dumps(actor.to_dict()), ENGINE_VERSION))
             for doc in docs:
                 read = reads[doc["id"]]
+                if unconfirmed:
+                    continue  # nothing was read; the last observation stays the last one made
                 if doc["id"] in moves and isinstance(read, files.Snapshot):
                     conn.execute("UPDATE documents SET rel_path = ? WHERE id = ?", (read.rel_path, doc["id"]))
                     record_event(conn, workspace_id=ws["id"], actor=actors.machine("recheck").to_dict(), type="document_moved",
                                  subject=doc["code"], payload={"from": moves[doc["id"]], "to": read.rel_path}, now=now)
                 self._record_observation(conn, ws["id"], doc["id"], read, now, moved_from=moves.get(doc["id"]))
+            for src_id, problem in source_problems.items():
+                conn.execute("UPDATE sources SET last_problem = ?, last_problem_at = ? WHERE id = ?",
+                             (problem, now if problem else None, src_id))
             for src_id, (read, extracted) in source_reads.items():
-                if extracted is None:
-                    continue
                 prev = latest_src.get(src_id)
                 number = (conn.execute("SELECT MAX(revision) FROM source_revisions WHERE source_id = ?", (src_id,)).fetchone()[0] or 0) + 1
                 if extracted["status"] == "ok":
@@ -1167,10 +1270,18 @@ class Desk:
                 if cur.get("field_id"):
                     fv = conn.execute("SELECT id FROM field_versions WHERE field_id = ? ORDER BY version DESC LIMIT 1", (cur["field_id"],)).fetchone()
                     field_version = fv["id"] if fv else None
+                kept: set[str] = set()
                 if sha:
+                    # Results that depended on the environment (missing engine, timeout) are replaced; final
+                    # results are history and are not written twice.
                     conn.execute("DELETE FROM check_results WHERE mapping_version_id = ? AND requirement_version_id = ? AND sha256 = ? "
                                  "AND engine = ? AND transient = 1", (cur["id"], effective["id"], sha, ENGINE_VERSION))
+                    kept = {row[0] for row in conn.execute(
+                        "SELECT check_name FROM check_results WHERE mapping_version_id = ? AND requirement_version_id = ? AND sha256 = ? "
+                        "AND engine = ? AND transient = 0", (cur["id"], effective["id"], sha, ENGINE_VERSION)).fetchall()}
                 for result in results:
+                    if result["check"] in kept:
+                        continue
                     conn.execute(
                         "INSERT INTO check_results(id, run_id, workspace_id, mapping_version_id, requirement_version_id, field_version_id, document_id, sha256, engine, check_name, status, measurement, limit_value, units, method, detail, transient, cause, created_at) "
                         "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1182,22 +1293,17 @@ class Desk:
                          (self.now(), dumps({"documents": len(docs), "computed": len(computed)}), run_id))
             conn.execute("UPDATE workspaces SET last_check_at = ?, last_check_run = ? WHERE id = ?", (now, run_id, ws["id"]))
             self._mark_changed(ws["id"], ws["revision"])
-        out = self.readiness(ws["id"], _fresh=True)
-        source_notes = []
-        for src in sources:
-            pair = source_reads.get(src["id"])
-            if pair and isinstance(pair[0], files.Problem):
-                source_notes.append({"code": "source_unreadable",
-                                     "message": f"Source {src['code']} ({src['rel_path']}) cannot be read now: {pair[0].detail} The saved snapshot is still used."})
-        out["notes"].extend(source_notes)
+        unread = sorted(doc["rel_path"] for doc in docs if not isinstance(reads.get(doc["id"]), files.Snapshot))
+        out = self.readiness(ws["id"], _fresh=True, _unread=unread)
+        out["unread"] = unread
         return out
 
-    def readiness(self, ws_ref: str | None, *, _fresh: bool = False) -> dict:
+    def readiness(self, ws_ref: str | None, *, _fresh: bool = False, _unread: list[str] | None = None) -> dict:
         """Derived readiness. Without a recheck this is a labelled snapshot of the last check."""
         with self.store.tx() as conn:
             ws = self._ws_row(conn, ws_ref)
             state = self._load_state(conn, ws)
-        out = readiness.derive(state, now=self._clock(), fresh=_fresh, checked_at=ws.get("last_check_at"))
+        out = readiness.derive(state, now=self._clock(), fresh=_fresh, checked_at=ws.get("last_check_at"), unread=_unread)
         for item in out["items"]:
             req = item.get("requirement")
             if req and req.get("kind") == "deadline":
@@ -1205,6 +1311,7 @@ class Desk:
                 if info:
                     item["deadline"] = info
         out["workspace"] = {k: ws.get(k) for k in ("id", "title", "material_root", "timezone", "revision", "last_check_at", "created_at")}
+        out["workspace"]["folder"] = self._folder_view(ws)
         out["sources"] = state["source_list"]
         out["documents"] = state["document_list"]
         out["fields"] = state["field_list"]
@@ -1214,12 +1321,15 @@ class Desk:
         wid = ws["id"]
         source_rows = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM sources WHERE workspace_id = ?", (wid,)).fetchall()}
         source_revisions: dict[str, dict] = {}
-        latest_by_source: dict[str, dict] = {}
-        for r in conn.execute("SELECT id, source_id, revision, captured_at, sha256, status, method, text, pages FROM source_revisions WHERE workspace_id = ? ORDER BY revision",
+        latest_by_source: dict[str, dict] = {}   # newest revision whose text could be extracted
+        newest_by_source: dict[str, dict] = {}   # newest revision of any status
+        for r in conn.execute("SELECT id, source_id, revision, captured_at, sha256, status, method, detail, text, pages FROM source_revisions WHERE workspace_id = ? ORDER BY revision",
                               (wid,)).fetchall():
             src = source_rows.get(r["source_id"], {})
             source_revisions[r["id"]] = {"code": src.get("code"), "label": src.get("label"), "revision": r["revision"],
-                                         "captured_at": r["captured_at"], "origin_note": src.get("origin_note"), "source_id": r["source_id"]}
+                                         "captured_at": r["captured_at"], "origin_note": src.get("origin_note"), "source_id": r["source_id"],
+                                         "added_by": _actor_label(src["created_by"]) if src.get("created_by") else ""}
+            newest_by_source[r["source_id"]] = dict(r)
             if r["status"] == "ok":
                 latest_by_source[r["source_id"]] = dict(r)
         reqs: dict[str, dict] = {}
@@ -1245,11 +1355,19 @@ class Desk:
             req.update(effective=effective, latest=latest, pending=pending)
             requirements.append(req)
             if effective and effective.get("source_revision_id") and effective.get("excerpt"):
-                src_id = source_revisions.get(effective["source_revision_id"], {}).get("source_id")
+                cited = source_revisions.get(effective["source_revision_id"], {})
+                src_id = cited.get("source_id") or ""
+                newest_any = newest_by_source.get(src_id)
                 newest = latest_by_source.get(src_id)
-                if newest and newest["id"] != effective["source_revision_id"]:
-                    found = textsrc.locate(newest["text"] or "", effective["excerpt"], loads(newest["pages"], None))
-                    source_drift[effective["id"]] = {"found": found["match"] != "none", "revision": newest["revision"],
+                if newest_any and newest_any["status"] != "ok" and newest_any["revision"] > (cited.get("revision") or 0):
+                    # The instructions changed into something no text can be extracted from: the quote can no
+                    # longer be checked against them, which must not read as "unchanged".
+                    source_drift[effective["id"]] = {"found": False, "unreadable": True, "source": cited.get("code"),
+                                                     "revision": newest_any["revision"], "captured_at": newest_any["captured_at"],
+                                                     "detail": newest_any["detail"] or newest_any["status"]}
+                elif newest and newest["id"] != effective["source_revision_id"]:
+                    found = self._locate_cached(newest, effective["excerpt"])
+                    source_drift[effective["id"]] = {"found": found, "source": cited.get("code"), "revision": newest["revision"],
                                                      "captured_at": newest["captured_at"]}
         fields: dict[str, dict] = {}
         field_list = []
@@ -1333,10 +1451,17 @@ class Desk:
         source_list = []
         for s in source_rows.values():
             newest = latest_by_source.get(s["id"])
+            newest_any = newest_by_source.get(s["id"])
+            unreadable = None
+            if newest_any and newest_any["status"] != "ok" and (newest is None or newest_any["revision"] > newest["revision"]):
+                unreadable = {"revision": newest_any["revision"], "captured_at": newest_any["captured_at"],
+                              "status": newest_any["status"], "detail": newest_any["detail"]}
             source_list.append({"id": s["id"], "code": s["code"], "label": s["label"], "kind": s["kind"], "rel_path": s["rel_path"],
                                 "origin_note": s["origin_note"], "revision": newest["revision"] if newest else None,
                                 "captured_at": newest["captured_at"] if newest else None, "method": newest["method"] if newest else None,
-                                "chars": len(newest["text"] or "") if newest else 0})
+                                "chars": len(newest["text"] or "") if newest else 0, "unreadable_revision": unreadable,
+                                "last_problem": s.get("last_problem"), "last_problem_at": s.get("last_problem_at"),
+                                "added_by": _actor_label(s["created_by"]) if s.get("created_by") else ""})
         source_list.sort(key=lambda s: int(s["code"][1:]))
         return {
             "workspace": ws, "requirements": requirements, "fields": fields, "documents": documents, "mappings": mappings,

@@ -58,17 +58,17 @@ function parseError(err) {
     body = null
   }
   if (body && typeof body.detail === 'object' && body.detail && !body.error) body = body.detail // FastAPI HTTPException shape
-  return {
-    status,
-    code: (body && body.error) || (status ? 'http_' + status : 'network'),
-    message: (body && body.message) || (match ? match[2] : text) || 'Request failed',
-    hint: (body && body.hint) || '',
-    details: (body && body.details) || {}
-  }
+  // A real Error: host components such as ConfirmDialog show err.message only for Error instances.
+  const out = new Error((body && body.message) || (match ? match[2] : text) || 'Request failed')
+  out.status = status
+  out.code = (body && body.error) || (status ? 'http_' + status : 'network')
+  out.hint = (body && body.hint) || ''
+  out.details = (body && body.details) || {}
+  return out
 }
 
 async function api(path, options) {
-  if (!rest) throw { status: 0, code: 'unavailable', message: 'Submission Desk backend is not connected.', hint: '' }
+  if (!rest) throw Object.assign(new Error('Submission Desk backend is not connected.'), { status: 0, code: 'unavailable', hint: '', details: {} })
   try {
     return await rest(path, options || {})
   } catch (err) {
@@ -155,6 +155,33 @@ function ErrorLine({ error }) {
   return h('div', { role: 'alert', style: S.error },
     error.code === 'stale_revision' ? 'Not saved: ' + error.message + ' Your input is kept; review the refreshed page and try again.' : error.message,
     error.hint ? h('div', { style: { ...S.muted, marginTop: 2 } }, error.hint) : null)
+}
+
+function FolderBanner({ wsId, data, onDone }) {
+  const folder = data.workspace.folder
+  const [error, setError] = useState(null)
+  const [busy, setBusy] = useState(false)
+  if (!folder || folder.confirmed) return null
+  const confirm = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await api('/workspaces/' + encodeURIComponent(wsId) + '/folder/confirm', { method: 'POST', body: { material_root: folder.path, expected_revision: data.workspace.revision, idempotency_key: newKey() } })
+      await onDone()
+    } catch (err) {
+      setError(err)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return h('div', { role: 'alert', style: { ...S.card, borderColor: 'var(--ui-yellow)' } },
+    h('div', { style: { ...S.row, fontSize: 14, fontWeight: 600 } }, h(Codicon, { name: 'warning', size: 14 }), 'Confirm the application folder'),
+    h('div', { style: S.small }, 'The agent chose this folder. Nothing in it is read until you confirm it holds your application files.'),
+    h('div', { style: { ...S.mono, ...S.small, wordBreak: 'break-all' } }, folder.path),
+    h('div', { style: S.row },
+      h(Button, { size: 'sm', onClick: confirm, disabled: busy }, busy ? 'Confirming…' : 'Yes, this is my application folder'),
+      h('span', { style: { ...S.tiny, ...S.muted } }, 'Not yours? Delete these records below and start a new application.')),
+    h(ErrorLine, { error }))
 }
 
 function Field({ label, hint, children }) {
@@ -808,14 +835,18 @@ function WorkspaceView({ wsId, workspaces, onSwitch, onNew }) {
       h('div', { style: { ...S.row, justifyContent: 'space-between' } },
         h('div', { style: { ...S.col, gap: 2, flex: '1 1 300px' } },
           h('h2', { style: { margin: 0, fontSize: 18, fontWeight: 600, wordBreak: 'break-word' } }, data.workspace.title),
-          h('div', { style: { ...S.tiny, ...S.muted, wordBreak: 'break-all' } }, h(Codicon, { name: 'folder', size: 11 }), ' ', data.workspace.material_root)),
+          h('div', { style: { ...S.tiny, ...S.muted, wordBreak: 'break-all' } }, h(Codicon, { name: 'folder', size: 11 }), ' ', data.workspace.material_root,
+            data.workspace.folder && data.workspace.folder.confirmed && data.workspace.folder.chosen_by === 'agent proposal' ? ' · chosen by the agent, confirmed by you' : '')),
         h('div', { style: S.row },
           workspaces.length > 1 ? h('select', { 'aria-label': 'Application', value: wsId, onChange: e => onSwitch(e.target.value), style: nativeSelect }, workspaces.map(w => h('option', { key: w.id, value: w.id }, w.title))) : null,
           h(Button, { size: 'sm', variant: 'secondary', onClick: recheck, disabled: checking, title: 'Re-read and hash every mapped file and source now' }, h(Codicon, { name: checking ? 'loading' : 'refresh', size: 12, spinning: checking }), checking ? 'Checking…' : 'Recheck'),
           h(Button, { size: 'sm', variant: 'secondary', onClick: () => setDialog({ type: 'export' }) }, h(Codicon, { name: 'checklist', size: 12 }), 'Export checklist'))),
-      h('div', { role: 'status', style: { ...S.tiny, color: data.fresh ? 'var(--ui-text-tertiary)' : 'var(--ui-yellow)' } },
-        data.fresh ? `Current: files re-read and hashed at ${when(data.checked_at)}. Not monitored continuously; recheck after you change files.` : `Snapshot from ${when(data.checked_at)}: files have not been re-read since. Recheck to update.`),
+      h('div', { role: 'status', style: { ...S.tiny, color: data.fresh && !(data.unread || []).length ? 'var(--ui-text-tertiary)' : 'var(--ui-yellow)' } },
+        data.fresh && (data.unread || []).length ? data.freshness
+          : data.fresh ? `Current: files re-read and hashed at ${when(data.checked_at)}. Not monitored continuously; recheck after you change files.` : `Snapshot from ${when(data.checked_at)}: files have not been re-read since. Recheck to update.`),
       h(ErrorLine, { error: checkError })),
+
+    h(FolderBanner, { wsId, data, onDone: recheck }),
 
     // Headline: blockers first, never a bare green summary.
     h('div', { style: { ...S.card, borderColor: blocked ? 'var(--ui-stroke-secondary)' : 'var(--ui-stroke-tertiary)' } },
@@ -857,7 +888,7 @@ function WorkspaceView({ wsId, workspaces, onSwitch, onNew }) {
     h(Section, { title: 'Instructions on file', count: (data.sources || []).length },
       (data.sources || []).length ? h('div', { style: S.col }, data.sources.map(s => h('div', { key: s.code, style: { ...S.small, ...S.row } },
         h('span', { style: S.faint }, s.code), h('span', { style: { wordBreak: 'break-word' } }, s.label),
-        h('span', { style: { ...S.tiny, ...S.muted } }, `${s.kind === 'file' ? s.rel_path + ' · ' : ''}rev ${s.revision || '—'} · saved ${when(s.captured_at)} · ${(s.chars || 0).toLocaleString()} chars`)))) :
+        h('span', { style: { ...S.tiny, ...S.muted } }, `${s.kind === 'file' ? s.rel_path + ' · ' : ''}rev ${s.revision || '—'} · saved ${when(s.captured_at)} · ${(s.chars || 0).toLocaleString()} chars${s.added_by === 'agent proposal' ? ' · added by the agent' : ''}`)))) :
         h('div', { style: { ...S.small, ...S.muted } }, 'None yet.')),
 
     excluded.length ? h('details', null, h('summary', { style: { ...S.small, ...S.muted, cursor: 'pointer' } }, `Excluded (${excluded.length})`),

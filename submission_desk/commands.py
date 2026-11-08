@@ -15,7 +15,7 @@ import shlex
 
 from . import actors, export as export_mod, textfmt
 from .errors import ConfirmationRequired, DeskError
-from .readiness import STATE_LABELS, short
+from .readiness import short
 from .service import Desk
 
 COMMAND = "submission-desk"
@@ -26,6 +26,7 @@ HELP = """/submission-desk: application readiness (local checks only; you submit
   /submission-desk [status]          recheck files and show what is missing, failed, unknown, stale or yours to do
   /submission-desk details           the same with every measurement and quoted instruction
   /submission-desk list              workspaces
+  /submission-desk folder [confirm]  show the application folder; confirm one the agent chose
   /submission-desk pending           proposals waiting for your confirmation
   /submission-desk confirm R3        confirm a proposed requirement (or action A2) after reading it
   /submission-desk reject R3         reject a proposal
@@ -98,6 +99,8 @@ def _dispatch(ctx, desk: Desk, sub: str, args: list[str], ws_ref, session_id, pl
     if sub == "export":
         out = export_mod.export(desk, actors.machine("slash export"), ws_ref)
         return f"{out['headline']}\nChecklist: {out['checklist']}\nManifest: {out['manifest']}\n{out['note']}"
+    if sub == "folder" and not args:
+        return _folder_text(desk.readiness(ws_ref)["workspace"])
     human = _human(session_id, platform, source)
     if human is None:
         return "Decisions are accepted only from your own session (or an identified chat user)."
@@ -113,7 +116,34 @@ def _dispatch(ctx, desk: Desk, sub: str, args: list[str], ws_ref, session_id, pl
         return _resolve(ctx, desk, human, args, ws_ref)
     if sub == "delete":
         return _delete(ctx, desk, human, ws_ref)
+    if sub == "folder" and args and args[0].lower() == "confirm":
+        return _folder_confirm(ctx, desk, human, ws_ref)
     return f"Unknown subcommand {sub!r}.\n\n{HELP}"
+
+
+def _folder_text(ws: dict) -> str:
+    folder = ws["folder"]
+    if folder["confirmed"]:
+        return (f"Folder: {folder['path']}\nChosen by {folder['chosen_by']}; confirmed by {folder['confirmed_by']} "
+                f"at {folder['confirmed_at']}.")
+    return (f"Folder: {folder['path']}\nChosen by {folder['chosen_by']}; not confirmed yet, so nothing in it is read. "
+            "Confirm it with /submission-desk folder confirm or on the Desktop page.")
+
+
+def _folder_confirm(ctx, desk, human, ws_ref) -> str:
+    ws = desk.readiness(ws_ref)["workspace"]
+    folder = ws["folder"]
+    if folder["confirmed"]:
+        return _folder_text(ws)
+    question = (f"Is {folder['path']} the folder that holds your application files for \u201c{ws['title']}\u201d?\n"
+                f"It was chosen by {folder['chosen_by']}. Submission Desk reads only the files added from this folder.")
+    answer = _ask(ctx, question, [{"value": "yes", "label": f"Yes, use {folder['path']}"}, {"value": "no", "label": "Cancel"}])
+    if answer is None:
+        return _NO_HUMAN
+    if answer != "yes":
+        return "Cancelled; nothing recorded."
+    desk.confirm_folder(human, ws_ref, folder["path"], expected_revision=ws["revision"])
+    return f"Folder {folder['path']} confirmed by you. Files in it can now be added and checked."
 
 
 def _find_item(r: dict, code: str):
@@ -337,4 +367,4 @@ def register(ctx) -> None:
                              setup_fn=setup_cli, handler_fn=run_cli)
 
 
-__all__ = ["register", "make_handler", "HELP", "STATE_LABELS"]
+__all__ = ["register", "make_handler", "HELP"]

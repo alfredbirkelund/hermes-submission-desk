@@ -52,9 +52,11 @@ class StaleRevision(DeskError):
     http_status = 409
 
 
-class FileRefused(DeskError):
-    code = "file_refused"
-    http_status = 422
+class FolderUnconfirmed(DeskError):
+    """The agent chose the material folder and the applicant has not confirmed it yet."""
+
+    code = "folder_unconfirmed"
+    http_status = 409
 
 
 class ConfirmationRequired(DeskError):

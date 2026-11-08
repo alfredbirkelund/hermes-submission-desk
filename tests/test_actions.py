@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 
-from helpers import item
+from helpers import agent_workspace, item
 from pdfs import text_pdf
 
 CALL = """Synthetic grant call (test fixture)
@@ -16,9 +16,7 @@ Applicants must be enrolled at a Danish university.
 def _ws(host, material):
     (material / "call.txt").write_text(CALL, encoding="utf-8")
     text_pdf(material / "support-letter.pdf", ["Letter of support (unsigned draft)"])
-    out = host.tool("submission_desk_workspace", {"action": "create", "title": "Actions", "material_root": str(material),
-                                                   "source_files": ["call.txt"], "documents": ["support-letter.pdf"]})
-    return out["workspace"]["id"]
+    return agent_workspace(host, "Actions", material, source_files=["call.txt"], documents=["support-letter.pdf"])
 
 
 def test_signature_action_is_proposed_confirmed_done_and_goes_stale_when_the_file_changes(host, material):

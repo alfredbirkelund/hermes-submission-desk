@@ -3,5 +3,6 @@
   "label": "Submission Desk",
   "description": "Backend for the Submission Desk page in Hermes Desktop",
   "api": "plugin_api.py",
+  "entry": "dist/index.js",
   "tab": {"hidden": true}
 }

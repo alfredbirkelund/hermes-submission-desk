@@ -21,7 +21,7 @@ from typing import Any, Callable, Iterator
 
 from . import PLUGIN_ID
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -321,7 +321,19 @@ _SCHEMA_V2 = """
 ALTER TABLE check_results ADD COLUMN cause TEXT;
 """
 
-_MIGRATIONS: dict[int, str] = {1: _SCHEMA_V1, 2: _SCHEMA_V2}
+# v3: why a file source could not be read at the last recheck (bookkeeping, cleared once it reads again),
+# and who confirmed the material folder. A folder the applicant picked is confirmed when it is chosen;
+# one the agent chose is read only after the applicant confirms it, so older agent-made workspaces wait.
+_SCHEMA_V3 = """
+ALTER TABLE sources ADD COLUMN last_problem TEXT;
+ALTER TABLE sources ADD COLUMN last_problem_at TEXT;
+ALTER TABLE workspaces ADD COLUMN folder_confirmed_at TEXT;
+ALTER TABLE workspaces ADD COLUMN folder_confirmed_by TEXT;
+UPDATE workspaces SET folder_confirmed_at = created_at, folder_confirmed_by = created_by
+  WHERE created_by LIKE '%"kind":"human"%';
+"""
+
+_MIGRATIONS: dict[int, str] = {1: _SCHEMA_V1, 2: _SCHEMA_V2, 3: _SCHEMA_V3}
 
 CODE_PREFIX = {
     "source": "S", "requirement": "R", "field": "F", "document": "D",
@@ -498,9 +510,25 @@ def record_event(
 
 
 def idempotent_result(conn: sqlite3.Connection, key: str | None) -> Any:
+    """The stored result of an earlier identical request, or None when this request is new.
+
+    Keys from the Desktop backend are the route, the client's key and a fingerprint of the request
+    body, joined by the unit separator (0x1F): the same client key on the same route with a different
+    body is refused instead of silently answered from the first request.
+    """
     if not key:
         return None
     row = conn.execute("SELECT result FROM events WHERE idempotency_key = ?", (key,)).fetchone()
-    if row is None:
-        return None
-    return loads(row[0], default={"ok": True, "duplicate": True})
+    if row is not None:
+        return loads(row[0], default={"ok": True, "duplicate": True})
+    scope, sep, _ = key.rpartition("\x1f")
+    if sep and scope:
+        prefix = scope + "\x1f"
+        clash = conn.execute("SELECT 1 FROM events WHERE idempotency_key > ? AND idempotency_key < ? LIMIT 1",
+                             (prefix, prefix + "\U0010ffff")).fetchone()
+        if clash is not None:
+            from .errors import Invalid
+
+            raise Invalid("This request key was already used for a different request; nothing was changed.",
+                          hint="Reload the page and try again.")
+    return None

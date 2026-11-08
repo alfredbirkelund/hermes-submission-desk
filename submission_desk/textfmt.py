@@ -44,7 +44,7 @@ def compact(r: dict, *, full: bool = False) -> dict:
         rows.append(row)
     omitted = max(0, len(rows) - _MAX_ROWS)
     return {
-        "workspace": {k: r["workspace"].get(k) for k in ("id", "title", "material_root", "revision")},
+        "workspace": {k: r["workspace"].get(k) for k in ("id", "title", "material_root", "revision", "folder")},
         "fresh": r["fresh"], "freshness": r["freshness"], "checked_at": r["checked_at"],
         "headline": r["summary"]["headline"], "verdict": r["summary"]["verdict"], "counts": r["summary"]["counts"],
         "items": rows[:_MAX_ROWS], "omitted_items": omitted,

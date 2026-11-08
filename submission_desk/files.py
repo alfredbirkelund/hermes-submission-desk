@@ -43,11 +43,11 @@ class Snapshot:
 @dataclass
 class Problem:
     rel_path: str
-    status: str  # missing | unreadable | not_regular | outside_root | invalid_path | changed_during_read | root_missing
+    # missing | unreadable | not_regular | outside_root | invalid_path | changed_during_read | root_missing
+    # | moved_ambiguous | folder_unconfirmed
+    status: str
     detail: str = ""
     candidates: list[str] = field(default_factory=list)
-    sha256: str | None = None
-    size: int | None = None
 
 
 def resolve_root(material_root: str) -> Path:
@@ -119,7 +119,9 @@ def normalize_rel_path(root: Path, path: str) -> str:
         raise ValueError("File path is empty.")
     if "\x00" in path:
         raise ValueError("File path contains a NUL byte.")
-    raw = os.path.expanduser(path.strip())
+    # Taken exactly as given: a name may begin or end with spaces, and the file picker and the agent
+    # pass names as listed.
+    raw = os.path.expanduser(path) if path.startswith("~") else path
     candidate = Path(raw)
     if candidate.is_absolute():
         lexical = Path(os.path.normpath(candidate))
@@ -132,7 +134,8 @@ def normalize_rel_path(root: Path, path: str) -> str:
         rel = os.path.relpath(lexical, root)
     else:
         rel = os.path.normpath(raw)
-    if rel == "." or rel.startswith("..") or os.path.isabs(rel):
+    parts = Path(rel).parts
+    if rel == "." or os.path.isabs(rel) or (parts and parts[0] == ".."):  # "..data" is a name, ".." is not
         raise ValueError(f"{path} is outside the material folder {root}.")
     return Path(rel).as_posix()
 
