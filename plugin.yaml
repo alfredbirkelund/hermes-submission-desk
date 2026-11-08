@@ -1,0 +1,23 @@
+name: submission-desk
+version: "0.1.0"
+manifest_version: 2
+api_version: 1
+description: >-
+  Application readiness for one grant, scholarship or university application. Requirements you confirm,
+  quoted from the instructions, are mapped to exact portal fields and exact file revisions (SHA-256), checked
+  by machine (real format, exact size, PDF pages, word counts) and tracked with your own actions and sign-offs.
+  A changed file, requirement or mapping makes earlier reviews stale. Exports a hand-back checklist and a
+  manifest. Local only: it never logs in, uploads, signs or submits.
+author: Alfred Birkelund
+license: MIT
+homepage: https://github.com/alfredbirkelund/hermes-submission-desk
+requires_hermes: ">=0.23.0"
+tags: [applications, grants, scholarships, documents, checklist, pdf, desktop]
+provides_tools:
+  - submission_desk_workspace
+  - submission_desk_propose
+  - submission_desk_check
+  - submission_desk_export
+provides_hooks: []
+python_dependencies:
+  - "pypdf>=6.21.4,<7"

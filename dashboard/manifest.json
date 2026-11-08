@@ -1,0 +1,7 @@
+{
+  "name": "submission-desk",
+  "label": "Submission Desk",
+  "description": "Backend for the Submission Desk page in Hermes Desktop",
+  "api": "plugin_api.py",
+  "tab": {"hidden": true}
+}
