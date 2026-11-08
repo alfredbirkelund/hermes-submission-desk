@@ -64,14 +64,16 @@ A checkout inside a hidden folder runs too: the tests then put their material fo
 ## Mutation check
 
 `scripts/mutation_check.py` removes one safeguard at a time and runs the test that guards it; the
-test must fail. It holds **51 mutations**: review binding (bytes, field label, mapping, requirement
-version), symlink and swap defences, forged agent fields, verbatim evidence, picker answers,
-source drift, untimed deadlines, attestation binding, export revalidation, empty page trees,
-unresolved word conventions, ambiguous MB, stale windows, delete confirmation, engine-missing
-caching, stored cause, atomic field creation, Desktop error parsing, live refresh, and the 21
-safeguards added after the first independent review (listed in the script).
+test must fail. Before mutating anything it runs the same tests **unmutated** (the whole suite once,
+or just the selected tests) and exits 2 if they are red: without that, a broken environment would
+turn every mutation into a false CAUGHT. It holds **51 mutations**: review binding (bytes, field
+label, mapping, requirement version), symlink and swap defences, forged agent fields, verbatim
+evidence, picker answers, source drift, untimed deadlines, attestation binding, export revalidation,
+empty page trees, unresolved word conventions, ambiguous MB, stale windows, delete confirmation,
+engine-missing caching, stored cause, atomic field creation, Desktop error parsing, live refresh,
+and the 21 safeguards added after the first independent review (listed in the script).
 
-Latest run: **51 of 51 mutations caught** (commit 65732df, one run).
+Latest run: **51 of 51 mutations caught**, baseline green, exit 0 (2026-11-08, Hermes v0.23.0).
 
 ## Catalog and install gates
 

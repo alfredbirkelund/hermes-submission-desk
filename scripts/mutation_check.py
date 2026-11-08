@@ -181,7 +181,36 @@ MUTATIONS = [
 ]
 
 
+def baseline(selected: list[str]) -> int:
+    """Prove the tests are green before anything is mutated.
+
+    A red suite (missing dependency, wrong interpreter, broken fixture, a half-restored file from an
+    interrupted run) makes every mutation report CAUGHT while proving nothing. With selectors, each
+    selected test is run unmutated; without one, the whole suite runs once.
+    """
+    if selected:
+        runs = [(name, selector) for name, _rel, _old, _new, selector in MUTATIONS
+                if any(s in name for s in selected)]
+    else:
+        runs = [("whole suite", "-q")]
+    for label, arg in runs:
+        print(f"baseline  {label}")
+        sys.stdout.flush()
+        proc = subprocess.run([str(ROOT / "scripts" / "test.sh"), arg, "-q"], cwd=ROOT,
+                              capture_output=True, text=True, timeout=1800)
+        if proc.returncode != 0:
+            print(f"BASELINE FAILED  {label}: nothing below would mean anything")
+            sys.stdout.write((proc.stdout + proc.stderr)[-3000:])
+            return 2
+    print(f"baseline green: {len(runs)} run(s) on the unmutated tree")
+    sys.stdout.flush()
+    return 0
+
+
 def main(selected: list[str]) -> int:
+    code = baseline(selected)
+    if code:
+        return code
     failures = 0
     for name, rel, old, new, selector in MUTATIONS:
         if selected and not any(s in name for s in selected):
