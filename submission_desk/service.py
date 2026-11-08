@@ -1117,12 +1117,12 @@ class Desk:
                                  "AND engine = ? AND transient = 1", (cur["id"], effective["id"], sha, ENGINE_VERSION))
                 for result in results:
                     conn.execute(
-                        "INSERT INTO check_results(id, run_id, workspace_id, mapping_version_id, requirement_version_id, field_version_id, document_id, sha256, engine, check_name, status, measurement, limit_value, units, method, detail, transient, created_at) "
-                        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO check_results(id, run_id, workspace_id, mapping_version_id, requirement_version_id, field_version_id, document_id, sha256, engine, check_name, status, measurement, limit_value, units, method, detail, transient, cause, created_at) "
+                        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (new_id(), run_id, ws["id"], cur["id"], effective["id"], field_version, cur["document_id"], sha, ENGINE_VERSION,
                          result["check"], result["status"], dumps(result["measurement"]), dumps(result["limit"]), result["units"],
                          result["method"], result["detail"] + (" [estimate]" if result.get("estimate") else ""),
-                         1 if (result.get("transient") or sha is None) else 0, now))
+                         1 if (result.get("transient") or sha is None) else 0, result.get("cause"), now))
             conn.execute("UPDATE check_runs SET finished_at = ?, status = 'completed', summary = ? WHERE id = ?",
                          (self.now(), dumps({"documents": len(docs), "computed": len(computed)}), run_id))
             conn.execute("UPDATE workspaces SET last_check_at = ?, last_check_run = ? WHERE id = ?", (now, run_id, ws["id"]))
@@ -1234,7 +1234,7 @@ class Desk:
             view = {"check": r["check_name"], "status": r["status"], "measurement": loads(r["measurement"]),
                     "limit": loads(r["limit_value"]), "units": r["units"], "method": r["method"],
                     "detail": (r["detail"] or "").replace(" [estimate]", ""), "estimate": (r["detail"] or "").endswith("[estimate]"),
-                    "transient": bool(r["transient"]), "checked_at": r["created_at"], "sha256": r["sha256"]}
+                    "transient": bool(r["transient"]), "cause": r["cause"], "checked_at": r["created_at"], "sha256": r["sha256"]}
             results.setdefault(key, []).append(view)
             if r["transient"]:
                 stored_keys[key] = "transient"

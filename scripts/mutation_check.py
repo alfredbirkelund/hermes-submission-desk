@@ -87,6 +87,18 @@ MUTATIONS = [
     ("deletion without confirmation token", "submission_desk/service.py",
      "            if confirm_token != token:", "            if False:",
      T + "test_concurrency.py::test_deleting_an_application_needs_confirmation_and_touches_only_its_records"),
+    ("missing PDF engine cached as the file's result", "submission_desk/checks.py",
+     'transient=status in ("timeout", "crashed", "engine_unavailable")', 'transient=status in ("timeout", "crashed")',
+     T + "test_checks.py::test_an_unknown_caused_by_the_environment_is_rechecked_once_the_engine_works"),
+    ("cause of an unknown dropped from storage", "submission_desk/service.py",
+     '"cause": r["cause"], ', "",
+     T + "test_checks.py::test_the_cause_of_an_unknown_survives_storage_and_old_ledgers_upgrade"),
+    ("new portal field created outside the mapping transaction", "submission_desk/service.py",
+     "            if new_field:\n                # Resolve the requirement first", "            if False:\n                # Resolve the requirement first",
+     T + "test_concurrency.py::test_mapping_to_a_new_portal_field_is_one_atomic_request"),
+    ("Desktop IPC-wrapped REST errors shown raw", "desktop/plugin.js",
+     ".replace(/^Error invoking remote method '[^']*':\\s*/, '')", "",
+     T + "test_desktop_js.py::test_rest_errors_are_parsed_through_the_desktop_ipc_wrapper"),
 ]
 
 

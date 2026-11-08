@@ -356,6 +356,14 @@ def _fix_hint(result: dict) -> str:
 
 def _unknown_hint(result: dict) -> str:
     check = result["check"]
+    by_hand = f"or check it yourself and record it with “Verify {check} by hand”."
+    cause = result.get("cause")
+    if cause == "engine_unavailable":
+        return f"Install the plugin's PDF engine (run `hermes pm repair`, restart Hermes, then recheck), {by_hand}"
+    if cause == "encrypted_locked":
+        return f"Save a copy without a password and recheck, {by_hand}"
+    if cause == "parse_error":
+        return f"Export the document again as a standard PDF and recheck, {by_hand}"
     if check == "size":
         return "Ask the institution whether MB means 1,000,000 or 1,048,576 bytes, or keep the file under the decimal limit."
     if check == "words":

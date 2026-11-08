@@ -14,11 +14,11 @@ PASS, FAIL, UNKNOWN, NA = "pass", "fail", "unknown", "not_applicable"
 
 
 def _result(check: str, status: str, *, measurement=None, limit=None, units=None, method="", detail="",
-            estimate=False, transient=False) -> dict:
+            estimate=False, transient=False, cause: str | None = None) -> dict:
     return {
         "check": check, "status": status, "measurement": measurement, "limit": limit, "units": units,
         "method": method, "detail": detail, "estimate": estimate, "transient": transient,
-        "engine": ENGINE_VERSION,
+        "cause": cause, "engine": ENGINE_VERSION,
     }
 
 
@@ -118,15 +118,16 @@ def _probe_unknown(check: str, facts: PdfFacts | None, limit, units: str) -> dic
     messages = {
         "encrypted_locked": "The PDF is password-protected; it cannot be read without the password.",
         "parse_error": "The PDF could not be parsed (damaged or non-standard). This is not the same as 0.",
-        "engine_unavailable": "The PDF engine (pypdf) is not installed in this Hermes environment.",
+        "engine_unavailable": "not counted, because the PDF engine (pypdf) is missing from this Hermes environment.",
         "timeout": "PDF inspection timed out and was stopped.",
         "crashed": "The PDF inspector failed.",
     }
     detail = messages.get(status, status)
-    if facts.result.get("detail"):
+    if facts.result.get("detail") and status not in ("engine_unavailable",):
         detail = f"{detail} ({facts.result['detail']})"
     return _result(check, UNKNOWN, limit=limit, units=units, method=facts.engine, detail=detail,
-                   transient=status in ("timeout", "crashed"))
+                   # Says nothing about the bytes: recheck instead of caching it for this file revision.
+                   transient=status in ("timeout", "crashed", "engine_unavailable"), cause=status)
 
 
 def _pages_check(fmt: str, read: Snapshot, facts: PdfFacts | None, rules: dict) -> dict:

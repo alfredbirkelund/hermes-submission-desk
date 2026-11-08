@@ -109,3 +109,85 @@ def test_page_counts_agree_with_pdfinfo(tmp_path):
         out = subprocess.run(["pdfinfo", str(tmp_path / case["file"])], capture_output=True, text=True, check=True).stdout
         pages = int(next(line.split(":", 1)[1] for line in out.splitlines() if line.startswith("Pages:")))
         assert pages == case["pages"], case["file"]
+
+
+def test_a_missing_pdf_engine_is_unknown_with_a_concrete_fix():
+    """Without pypdf the page check stays unknown and tells the applicant how to fix it or verify by hand."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from submission_desk import checks, readiness
+
+    facts = checks.PdfFacts(b"%PDF-1.7 ...", want_text=False,
+                            probe=lambda data, want_text: {"status": "engine_unavailable", "detail": "pypdf is not installed (ModuleNotFoundError)."})
+    result = checks._pages_check("pdf", None, facts, {"max_pages": 2})
+    assert result["status"] == "unknown" and result["cause"] == "engine_unavailable"
+    assert result["detail"] == "not counted, because the PDF engine (pypdf) is missing from this Hermes environment."
+    hint = readiness._unknown_hint(result)
+    assert "hermes pm repair" in hint and "Verify pages by hand" in hint
+
+
+def test_an_unknown_caused_by_the_environment_is_rechecked_once_the_engine_works(tmp_path, monkeypatch):
+    """A missing engine says nothing about the file, so its result must not be cached for that revision."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from submission_desk import actors, pdfprobe, service, store
+
+    monkeypatch.setenv("SUBMISSION_DESK_DB", str(tmp_path / "db" / "data.db"))
+    material = tmp_path / "material"
+    material.mkdir()
+    text_pdf(material / "statement.pdf", ["One", "Two", "Three"])
+    engine = {"ok": False}
+
+    def probe(data, *, want_text):
+        if not engine["ok"]:
+            return {"status": "engine_unavailable", "detail": "pypdf is not installed (ModuleNotFoundError)."}
+        return pdfprobe.run_probe(data, want_text=want_text)
+
+    desk = service.Desk(store.Store(), probe=probe)
+    me = actors.human("desktop")
+    ws = desk.create_workspace(me, "Engine", str(material))["workspace"]["id"]
+    desk.create_requirement(me, ws, {"statement": "Statement, max 2 pages", "kind": "document", "rules": {"formats": ["pdf"], "max_pages": 2}})
+    desk.set_mapping(me, ws, requirement="R1", field=None, document="statement.pdf")
+
+    def pages():
+        state = desk.recheck(me, ws)
+        return next(c for c in item(state, "R1")["mappings"][0]["checks"] if c["check"] == "pages")
+
+    assert pages()["status"] == "unknown"
+    engine["ok"] = True  # e.g. after `hermes pm repair` and a restart
+    after = pages()
+    assert after["status"] == "fail" and after["measurement"] == 3, after
+
+
+def test_the_cause_of_an_unknown_survives_storage_and_old_ledgers_upgrade(tmp_path, monkeypatch):
+    """Readiness reads stored results; the fix it suggests must not depend on the result still being in memory."""
+    import sqlite3
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from submission_desk import actors, service, store
+
+    db = tmp_path / "db" / "data.db"
+    db.parent.mkdir()
+    old = sqlite3.connect(db)  # a ledger written by schema 1, before results carried a cause
+    old.executescript("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+    for statement in store._split_sql(store._MIGRATIONS[1]):
+        old.execute(statement)
+    old.execute("INSERT INTO meta(key, value) VALUES('schema_version', '1')")
+    old.commit()
+    old.close()
+
+    monkeypatch.setenv("SUBMISSION_DESK_DB", str(db))
+    material = tmp_path / "material"
+    material.mkdir()
+    text_pdf(material / "statement.pdf", ["One"])
+    desk = service.Desk(store.Store(), probe=lambda data, *, want_text: {"status": "engine_unavailable", "detail": "x"})
+    me = actors.human("desktop")
+    ws = desk.create_workspace(me, "Cause", str(material))["workspace"]["id"]
+    desk.create_requirement(me, ws, {"statement": "Statement, max 2 pages", "kind": "document", "rules": {"formats": ["pdf"], "max_pages": 2}})
+    desk.set_mapping(me, ws, requirement="R1", field=None, document="statement.pdf")
+    desk.recheck(me, ws)
+    state = desk.readiness(ws)  # read back from storage, not the in-memory result
+    reason = next(r for r in item(state, "R1")["reasons"] if r.get("check") == "pages" or "Pages" in r["message"])
+    assert "hermes pm repair" in reason["next"], reason
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == str(store.SCHEMA_VERSION)

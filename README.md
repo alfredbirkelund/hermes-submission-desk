@@ -38,7 +38,9 @@ hermes plugins install alfredbirkelund/hermes-submission-desk --enable
 ```
 
 The install asks for consent to one Python dependency, `pypdf` (pinned `>=6.21.4,<7`, the
-version Hermes itself pins for its document extras). Then restart Hermes.
+version Hermes itself pins for its document extras). Then restart Hermes. If the PDF engine is
+still missing, page and PDF word checks show *not checked* with the fix (`hermes pm repair`, then
+restart); they are rechecked automatically once it is installed. Nothing else depends on it.
 
 The plugin has three parts that install as one folder:
 
@@ -46,7 +48,11 @@ The plugin has three parts that install as one folder:
 |---|---|---|
 | Agent tools (4) | any chat with the agent | `hermes plugins enable submission-desk` |
 | `/submission-desk` command and `hermes submission-desk` CLI | chat, terminal | same |
-| Desktop page | Hermes Desktop sidebar → **Submission Desk** | also toggle it on in **Capabilities → Plugins** (Desktop halves are opt-in) |
+| Desktop page | Hermes Desktop sidebar → **Submission Desk** | also switch it on under **Capabilities → Plugins** (Settings → Plugins in Desktop 2026.9.x); Desktop halves are opt-in |
+
+Desktop builds older than 2026.9.21 have a known bug where a plugin page's sidebar entry appears
+but the page does not mount ([issue #109063](https://github.com/NousResearch/hermes-agent/issues/109063), fixed in 2026.9.21).
+Update the Desktop, or right-click **Submission Desk** in the sidebar and choose **Open in split**.
 
 ## Quick start
 

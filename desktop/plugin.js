@@ -99,7 +99,12 @@ const S = {
   quote: { borderLeft: '2px solid var(--ui-stroke-secondary)', paddingLeft: 10, color: 'var(--ui-text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
   label: { fontSize: 12, fontWeight: 500, color: 'var(--ui-text-secondary)' },
   error: { color: 'var(--ui-red)', fontSize: 12, lineHeight: '18px', whiteSpace: 'pre-wrap' },
-  grid2: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }
+  grid2: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 },
+  sub: { border: '1px solid var(--ui-stroke-tertiary)', borderRadius: 6, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0, background: 'color-mix(in srgb, var(--ui-text-secondary) 4%, transparent)' },
+  kv: { display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '3px 10px', alignItems: 'baseline', minWidth: 0 },
+  key: { fontSize: 10.5, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--ui-text-tertiary)' },
+  next: { display: 'flex', gap: 8, alignItems: 'flex-start', padding: '7px 10px', borderRadius: 6, background: 'color-mix(in srgb, var(--ui-accent) 9%, transparent)', border: '1px solid color-mix(in srgb, var(--ui-accent) 30%, transparent)' },
+  primaryText: { fontSize: 13.5, fontWeight: 500, color: 'var(--ui-text-primary)', wordBreak: 'break-word' }
 }
 
 const STATE = {
@@ -134,24 +139,6 @@ function when(iso) {
   if (!iso) return 'never'
   const d = new Date(iso)
   return isNaN(d.getTime()) ? String(iso) : d.toLocaleString()
-}
-
-function checkSummary(c) {
-  if (c.check === 'pages' && typeof c.measurement === 'number') {
-    const lim = c.limit || {}
-    const range = lim.max != null && lim.min != null ? `${lim.min}–${lim.max}` : lim.max != null ? `≤ ${lim.max}` : lim.min != null ? `≥ ${lim.min}` : ''
-    return `pages ${c.measurement}${range ? ' / ' + range : ''}`
-  }
-  if (c.check === 'size' && typeof c.measurement === 'number') return `size ${bytes(c.measurement)}`
-  if (c.check === 'words' && c.measurement && typeof c.measurement === 'object') {
-    const vals = Object.values(c.measurement).filter(v => typeof v === 'number')
-    if (vals.length) {
-      const lo = Math.min(...vals), hi = Math.max(...vals)
-      return `words ${lo === hi ? lo : lo + '–' + hi}${c.estimate ? ' (est.)' : ''}`
-    }
-  }
-  if (c.check === 'format' && c.measurement && c.measurement.detected) return `format ${c.measurement.detected}`
-  return c.check
 }
 
 function ErrorLine({ error }) {
@@ -482,7 +469,7 @@ function ReviewDialog({ wsId, data, item, mapping, onClose }) {
       h('div', null, h('span', { style: S.muted }, 'File: '), h('span', { style: { wordBreak: 'break-all' } }, doc.rel_path), ' · ' + bytes(doc.size)),
       h('div', { style: S.row }, h('span', { style: S.muted }, 'Revision (SHA-256): '), h('span', { style: S.mono }, doc.sha256), h(CopyButton, { text: doc.sha256, label: 'Copy hash' })),
       h('div', null, h('span', { style: S.muted }, 'Requirement: '), `${item.code} v${item.requirement.version}: ${item.requirement.statement}`),
-      h('div', { style: S.row }, (mapping.checks || []).map((c, i) => h(Badge, { key: i, variant: CHECK_VARIANT[c.status] || 'muted' }, checkSummary(c) + ': ' + c.status)))),
+      h(Checks, { checks: mapping.checks })),
     h(Field, { label: 'Note (optional)' }, h(Input, { value: note, onChange: e => setNote(e.target.value) })),
     h(ErrorLine, { error }))
 }
@@ -593,12 +580,33 @@ function ExportDialog({ wsId, onClose }) {
 
 // ───────────────────────────────────────────── rows
 
+const CHECK_NAME = { presence: 'File', format: 'Format', size: 'Size', pages: 'Pages', words: 'Words', encryption: 'Password' }
+const CHECK_ICON = { pass: 'check', fail: 'close', unknown: 'question', not_applicable: 'dash' }
+const CHECK_WORD = { pass: 'passed', fail: 'failed', unknown: 'not checked', not_applicable: 'n/a' }
+
+function chipLabel(c) {
+  const name = CHECK_NAME[c.check] || c.check
+  const lim = c.limit || {}
+  if (c.check === 'pages' && typeof c.measurement === 'number') return `${name} ${c.measurement}${lim.max != null ? ' of max ' + lim.max : lim.min != null ? ', min ' + lim.min : ''}`
+  if (c.check === 'size' && typeof c.measurement === 'number') return `${name} ${bytes(c.measurement)}`
+  if (c.check === 'words' && c.measurement && typeof c.measurement === 'object') {
+    const vals = Object.values(c.measurement).filter(v => typeof v === 'number')
+    if (vals.length) {
+      const lo = Math.min(...vals), hi = Math.max(...vals)
+      return `${name} ${lo === hi ? lo : lo + '–' + hi}${lim.max != null ? ' of max ' + lim.max : ''}${c.estimate ? ' (est.)' : ''}`
+    }
+  }
+  if (c.check === 'format' && c.measurement && c.measurement.detected) return `${name} ${String(c.measurement.detected).toUpperCase()}`
+  return name
+}
+
 function Checks({ checks }) {
   if (!checks || !checks.length) return null
   return h('div', { style: { ...S.row, gap: 4 } }, checks.map((c, i) => h(Badge, {
     key: i, variant: c.attested ? 'outline' : CHECK_VARIANT[c.status] || 'muted',
     title: `${c.check}: ${c.status}${c.estimate ? ' (estimate)' : ''}\n${c.detail || ''}\nMethod: ${c.method || '—'}${c.attested ? '\nVerified by you (attestation): ' + c.attested.statement : ''}`
-  }, checkSummary(c) + (c.attested ? ': verified by you' : ': ' + c.status))))
+  }, h(Codicon, { name: c.attested ? 'person' : CHECK_ICON[c.status] || 'circle', size: 11 }),
+  chipLabel(c) + ' · ' + (c.attested ? 'verified by you' : CHECK_WORD[c.status] || c.status))))
 }
 
 function CheckDetails({ checks }) {
@@ -613,65 +621,87 @@ function MappingBlock({ wsId, data, item, mapping, open, setDialog }) {
   const field = mapping.field
   const review = mapping.review || {}
   const unknownChecks = (mapping.checks || []).filter(c => c.status === 'unknown' && !c.attested && c.check !== 'presence')
-  return h('div', { style: { ...S.col, gap: 6, paddingLeft: 10, borderLeft: '2px solid var(--ui-stroke-tertiary)' } },
-    h('div', { style: { ...S.row, ...S.small } },
-      h(StateBadge, { state: mapping.state }),
-      h('span', { style: S.faint }, mapping.code),
-      h('span', null, h('span', { style: S.muted }, 'Portal field '), field ? '“' + field.label + '”' : h('em', { style: S.muted }, 'not chosen')),
-      h(Codicon, { name: 'arrow-left', size: 11, style: S.faint }),
-      doc ? h('span', { style: { wordBreak: 'break-all' } }, doc.rel_path) : h('em', { style: S.muted }, 'no file'),
-      doc && doc.sha256 ? h('span', { style: { ...S.mono, ...S.faint }, title: doc.sha256 }, 'rev ' + short(doc.sha256)) : null,
-      doc && doc.size != null ? h('span', { style: S.faint }, bytes(doc.size)) : null),
+  const canReview = doc && doc.sha256 && field && item.requirement.status === 'confirmed'
+  return h('div', { style: S.sub },
+    h('div', { style: { ...S.row, justifyContent: 'space-between' } },
+      h('div', { style: S.row },
+        (item.mappings || []).length > 1 || mapping.state !== item.state ? h(StateBadge, { state: mapping.state }) : null,
+        h('span', { style: { ...S.tiny, ...S.muted } }, 'Mapping ' + mapping.code)),
+      review.state === 'current' && review.latest
+        ? h('span', { style: { ...S.tiny, color: 'var(--ui-text-secondary)' } }, h(Codicon, { name: 'pass', size: 11 }), ` Reviewed by ${review.latest.actor_label} · ${when(review.latest.created_at)}`)
+        : review.state === 'stale' ? h('span', { style: { ...S.tiny, color: 'var(--ui-yellow, #d7a400)' } }, h(Codicon, { name: 'history', size: 11 }), ' Earlier review is stale') : null),
+    h('div', { style: S.kv },
+      h('span', { style: S.key }, 'Portal field'),
+      h('span', { style: { fontSize: 12.5, color: 'var(--ui-text-primary)', wordBreak: 'break-word' } }, field ? '“' + field.label + '”' : h('em', { style: S.muted }, 'not chosen')),
+      h('span', { style: S.key }, 'File'),
+      h('span', { style: { ...S.row, gap: 6, fontSize: 12.5 } },
+        doc ? h('span', { style: { color: 'var(--ui-text-primary)', wordBreak: 'break-all' } }, doc.rel_path) : h('em', { style: S.muted }, 'no file'),
+        doc && doc.sha256 ? h('span', { style: { ...S.mono, ...S.faint }, title: 'SHA-256 ' + doc.sha256 }, 'rev ' + short(doc.sha256)) : null,
+        doc && doc.size != null ? h('span', { style: { ...S.tiny, ...S.faint } }, bytes(doc.size)) : null)),
     h(Checks, { checks: mapping.checks }),
-    review.state === 'stale' ? h('div', { style: { ...S.tiny, color: 'var(--ui-text-secondary)' } }, 'Your earlier review is stale: ' + review.stale_because.join('; ') + '.') : null,
-    review.state === 'current' && review.latest ? h('div', { style: { ...S.tiny, ...S.muted } }, `Reviewed by ${review.latest.actor_label} · ${when(review.latest.created_at)} · rev ${short(review.latest.sha256)}`) : null,
+    review.state === 'stale' ? h('div', { style: { ...S.tiny, color: 'var(--ui-text-secondary)' } }, 'Your earlier review no longer covers this: ' + review.stale_because.join('; ') + '.') : null,
     open ? h(CheckDetails, { checks: mapping.checks }) : null,
     h('div', { style: { ...S.row, gap: 6 } },
-      doc && doc.sha256 && field && item.requirement.status === 'confirmed'
-        ? h(Button, { size: 'xs', variant: review.state === 'current' ? 'ghost' : 'secondary', onClick: () => setDialog({ type: 'review', item, mapping }) }, review.state === 'current' ? 'Review again' : 'Review this revision')
+      canReview
+        ? h(Button, { size: 'xs', variant: review.state === 'current' ? 'ghost' : 'default', onClick: () => setDialog({ type: 'review', item, mapping }) }, review.state === 'current' ? 'Review again' : 'Review this revision')
         : null,
-      h(Button, { size: 'xs', variant: 'ghost', onClick: () => setDialog({ type: 'map', item, mapping }) }, 'Change field or file'),
       unknownChecks.map(c => h(Button, {
-        key: c.check, size: 'xs', variant: 'ghost',
+        key: c.check, size: 'xs', variant: 'outline',
         onClick: () => setDialog({ type: 'attest', subject: { code: item.code, version: item.requirement.version, check: c.check, mapping: mapping.code, sha256: doc && doc.sha256, title: `Verify the ${c.check} check yourself`, text: `Plugin result: unknown. ${c.detail}` } })
-      }, 'Verify ' + c.check + ' by hand'))))
+      }, 'Verify ' + c.check + ' by hand')),
+      h(Button, { size: 'xs', variant: 'ghost', onClick: () => setDialog({ type: 'map', item, mapping }) }, 'Change field or file')))
+}
+
+function NextStep({ reasons }) {
+  if (!reasons.length) return null
+  const [first, ...rest] = reasons
+  const prefix = r => (r.mapping ? r.mapping + ' · ' : '')
+  return h('div', { style: { ...S.col, gap: 4 } },
+    h('div', { style: S.next },
+      h(Codicon, { name: 'arrow-right', size: 13, style: { marginTop: 2, color: 'var(--ui-accent)' } }),
+      h('div', { style: { ...S.col, gap: 2 } },
+        h('span', { style: { fontSize: 12.5, color: 'var(--ui-text-primary)' } }, h('strong', null, 'Next: '), first.next || first.message),
+        first.next ? h('span', { style: { ...S.tiny, ...S.muted } }, prefix(first) + first.message) : null)),
+    rest.length ? h('ul', { style: { margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 2 } },
+      rest.map((r, i) => h('li', { key: i, style: { ...S.tiny, color: 'var(--ui-text-secondary)' } },
+        prefix(r) + r.message, r.next ? h('span', { style: S.muted }, ' Next: ' + r.next) : null))) : null)
 }
 
 function RequirementRow({ wsId, data, item, setDialog }) {
   const [open, setOpen] = useState(false)
   const req = item.requirement
   const reasons = item.reasons || []
+  const mappings = item.mappings || []
   const needsMapping = ['document', 'text'].includes(req.kind) && req.status === 'confirmed'
   const attestable = ['human_action', 'attestation', 'other'].includes(req.kind) && req.status === 'confirmed'
   const src = req.source
-  return h('div', { style: { ...S.card, opacity: item.state === 'excluded' ? 0.6 : 1 } },
-    h('div', { style: { ...S.row, alignItems: 'flex-start', justifyContent: 'space-between' } },
-      h('div', { style: { ...S.col, gap: 4, flex: '1 1 320px' } },
-        h('div', { style: S.row },
+  return h('div', { style: { ...S.card, gap: 10, opacity: item.state === 'excluded' ? 0.6 : 1 } },
+    h('div', { style: { ...S.row, alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'nowrap' } },
+      h('div', { style: { ...S.col, gap: 5, flex: '1 1 auto' } },
+        h('div', { style: { ...S.row, alignItems: 'flex-start', flexWrap: 'nowrap' } },
           h(StateBadge, { state: item.state }),
-          h('span', { style: { ...S.small, ...S.faint } }, `${item.code} v${req.version}`),
-          h('span', { style: { ...S.tiny, ...S.faint } }, req.kind.replace('_', ' '))),
-        h('div', { style: { fontSize: 13, color: 'var(--ui-text-primary)', wordBreak: 'break-word' } }, req.statement),
-        (req.rules_text || []).length ? h('div', { style: { ...S.tiny, ...S.muted } }, req.rules_text.join(' · ')) : null),
+          h('span', { style: S.primaryText }, req.statement)),
+        h('div', { style: { ...S.row, ...S.tiny, ...S.muted, gap: 6 } },
+          h('span', { style: S.faint }, `${item.code} v${req.version} · ${req.kind.replace('_', ' ')}`),
+          (req.rules_text || []).length ? h('span', null, '· ' + req.rules_text.join(' · ')) : null,
+          item.deadline ? h('span', null, `· due ${when(item.deadline.due_utc)} (${item.deadline.remaining_hours} h left)`) : null)),
       h(Button, { size: 'xs', variant: 'ghost', 'aria-expanded': open, onClick: () => setOpen(!open) }, h(Codicon, { name: open ? 'chevron-up' : 'chevron-down', size: 12 }), open ? 'Less' : 'Details')),
     req.excerpt
       ? h('div', { style: { ...S.quote, ...S.small } }, '“' + req.excerpt + '”',
-          h('div', { style: { ...S.tiny, ...S.faint, marginTop: 2 } }, src ? `${src.code} ${src.label} · saved copy from ${when(src.captured_at)}${req.locator && req.locator.page ? ' · p. ' + req.locator.page : ''} · not the live portal` : ''))
+          h('div', { style: { ...S.tiny, ...S.muted, marginTop: 2 } }, src ? `${src.code} ${src.label} · saved copy from ${when(src.captured_at)}${req.locator && req.locator.page ? ' · p. ' + req.locator.page : ''} · not the live portal` : ''))
       : h('div', { style: { ...S.tiny, ...S.muted } }, 'No quoted source (entered by you).'),
-    item.deadline ? h('div', { style: { ...S.tiny, ...S.muted } }, `Due ${when(item.deadline.due_utc)} (${item.deadline.remaining_hours} h left)`) : null,
-    item.attested ? h('div', { style: { ...S.tiny, color: 'var(--ui-text-secondary)' } }, `Confirmed by you: “${item.attested.statement}” · ${when(item.attested.at)} (attestation, not verification)`) : null,
-    (item.mappings || []).map(m => h(MappingBlock, { key: m.code, wsId, data, item, mapping: m, open, setDialog })),
-    reasons.length ? h('ul', { style: { margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 3 } },
-      reasons.filter(r => !r.mapping || open || true).map((r, i) => h('li', { key: i, style: S.small },
-        h('span', { style: { color: 'var(--ui-text-secondary)' } }, (r.mapping ? r.mapping + ': ' : '') + r.message),
-        r.next ? h('span', { style: S.muted }, ' Next: ' + r.next) : null))) : null,
+    item.attested ? h('div', { style: { ...S.small, color: 'var(--ui-text-secondary)' } }, h(Codicon, { name: 'person', size: 11 }), ` Confirmed by you: “${item.attested.statement}” · ${when(item.attested.at)} (your attestation, not a machine check)`) : null,
+    mappings.map(m => h(MappingBlock, { key: m.code, wsId, data, item, mapping: m, open, setDialog })),
+    h(NextStep, { reasons }),
     open ? h('div', { style: { ...S.tiny, ...S.faint } }, `Proposed by ${req.created_by}${req.decided_by ? ' · confirmed by ' + req.decided_by + ' ' + when(req.decided_at) : ''}`) : null,
-    h('div', { style: { ...S.row, gap: 6 } },
-      needsMapping ? h(Button, { size: 'xs', variant: (item.mappings || []).length ? 'ghost' : 'secondary', onClick: () => setDialog({ type: 'map', item }) }, (item.mappings || []).length ? 'Add another field' : 'Map to field and file') : null,
-      attestable && !item.attested ? h(Button, { size: 'xs', variant: 'secondary', onClick: () => setDialog({ type: 'attest', subject: { code: item.code, version: req.version, title: `Mark ${item.code} done`, text: req.statement } }) }, 'Mark done') : null,
-      req.status === 'confirmed' ? h(Button, { size: 'xs', variant: 'ghost', onClick: () => setDialog({ type: 'requirement', editing: item }) }, 'Correct') : null,
-      req.status === 'confirmed' && item.state !== 'excluded' ? h(Button, { size: 'xs', variant: 'ghost', onClick: () => setDialog({ type: 'decide', code: item.code, version: req.version, decision: 'withdraw', text: req.statement }) }, 'Not applicable') : null,
-      item.state === 'excluded' && req.status === 'withdrawn' ? h(Button, { size: 'xs', variant: 'ghost', onClick: () => setDialog({ type: 'decide', code: item.code, version: req.version, decision: 'restore', text: req.statement }) }, 'Restore') : null))
+    h('div', { style: { ...S.row, gap: 6, justifyContent: 'space-between' } },
+      h('div', { style: { ...S.row, gap: 6 } },
+        needsMapping ? h(Button, { size: 'xs', variant: mappings.length ? 'ghost' : 'default', onClick: () => setDialog({ type: 'map', item }) }, mappings.length ? 'Add another field' : 'Map to field and file') : null,
+        attestable && !item.attested ? h(Button, { size: 'xs', variant: 'default', onClick: () => setDialog({ type: 'attest', subject: { code: item.code, version: req.version, title: `Mark ${item.code} done`, text: req.statement } }) }, 'Mark done') : null),
+      h('div', { style: { ...S.row, gap: 2 } },
+        req.status === 'confirmed' ? h(Button, { size: 'xs', variant: 'ghost', onClick: () => setDialog({ type: 'requirement', editing: item }) }, 'Correct') : null,
+        req.status === 'confirmed' && item.state !== 'excluded' ? h(Button, { size: 'xs', variant: 'ghost', onClick: () => setDialog({ type: 'decide', code: item.code, version: req.version, decision: 'withdraw', text: req.statement }) }, 'Not applicable') : null,
+        item.state === 'excluded' && req.status === 'withdrawn' ? h(Button, { size: 'xs', variant: 'ghost', onClick: () => setDialog({ type: 'decide', code: item.code, version: req.version, decision: 'restore', text: req.statement }) }, 'Restore') : null)))
 }
 
 function ProposalCard({ wsId, data, proposal, item, action }) {

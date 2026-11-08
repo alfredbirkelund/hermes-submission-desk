@@ -21,7 +21,7 @@ from typing import Any, Callable, Iterator
 
 from . import PLUGIN_ID
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -315,7 +315,13 @@ WORKSPACE_TABLES = (
     "check_results", "reviews", "actions", "action_versions", "attestations", "conflicts", "events",
 )
 
-_MIGRATIONS: dict[int, str] = {1: _SCHEMA_V1}
+# Schema 2: why a check result is unknown (engine_unavailable, parse_error, ...), so readiness can
+# suggest the right fix from stored results.
+_SCHEMA_V2 = """
+ALTER TABLE check_results ADD COLUMN cause TEXT;
+"""
+
+_MIGRATIONS: dict[int, str] = {1: _SCHEMA_V1, 2: _SCHEMA_V2}
 
 CODE_PREFIX = {
     "source": "S", "requirement": "R", "field": "F", "document": "D",
