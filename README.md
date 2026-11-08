@@ -19,6 +19,14 @@ recomputed from current evidence on every read. The model cannot set "ready".
 Submission Desk checks **local readiness only**. It never logs in, uploads, signs or submits,
 and passing its checks does not mean the institution will accept the application.
 
+![Readiness for a synthetic application: a page check failed and an earlier review went stale after the file changed](docs/screenshots/readiness-stale-review.png)
+
+| The agent proposes, quoting the instructions | A folder the agent picks waits for you |
+|---|---|
+| ![Agent proposals, each with its verbatim quote and Confirm or Reject](docs/screenshots/proposals-with-quotes.png) | ![Folder confirmation banner](docs/screenshots/folder-confirmation.png) |
+
+All screenshots use synthetic applications (`scripts/make_demo.py`, `tests/extraction_eval/`).
+
 ## Why a plugin, not a skill or a spreadsheet
 
 A skill can tell an agent to make a checklist, and a spreadsheet can hold one. Neither notices

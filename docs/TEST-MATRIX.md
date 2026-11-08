@@ -85,7 +85,7 @@ Latest run: **51 of 51 mutations caught** (commit 65732df, one run).
 
 Hermes Desktop 2026.9.7 (packaged build, Electron 40) with its backend from Hermes v0.23.0
 source, in an isolated `HERMES_HOME`, driven through the real UI (Chrome DevTools Protocol, with
-screenshots checked at each step; the screenshots are not part of the repository):
+screenshots checked at each step; three current ones are in `docs/screenshots/`):
 
 - enabled the Desktop half under Settings → Plugins; the page appears in the sidebar;
 - created a workspace; refused a folder inside a hidden home directory;
@@ -101,6 +101,12 @@ screenshots checked at each step; the screenshots are not part of the repository
   the real tool registry with the agent actor; confirming each activated its mapping and
   rechecked; resolved the conflict; exported the checklist and manifest; deleted a second
   workspace through the confirmation dialog (files on disk untouched).
+- after the review fixes (commit 65732df, installed with `hermes plugins update`): the ledger
+  written by the earlier build upgraded to schema 3 on first read; a workspace the agent had
+  created showed the folder banner and its headline led with "Confirm the folder first";
+  confirming removed the banner and the header read "chosen by the agent, confirmed by you"; a
+  workspace created on the page showed no banner; an agent tool call through the real registry
+  against the same home created a workspace whose file add was refused (`folder_unconfirmed`).
 
 ## Model-assisted extraction (one run)
 
